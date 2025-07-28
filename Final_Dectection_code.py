@@ -4,55 +4,85 @@ from datetime import datetime
 import os
 import time
 
-SENSOR_PIN = 22  # GPIO pin connected to sensor
-SAVE_DIR = os.path.join(os.path.expanduser("~"), "photos")
-os.makedirs(SAVE_DIR, exist_ok=True)
+# ========== Configuration ==========
+SENSOR_PIN = 22
+PHOTOS_PER_COIL = 3  # Change this as needed
+BASE_SAVE_DIR = os.path.join(os.path.expanduser("~"), "photos")
+LOG_FILE = os.path.join(BASE_SAVE_DIR, "capture_log.txt")
+os.makedirs(BASE_SAVE_DIR, exist_ok=True)
+# ===================================
 
 # Initialize GPIO chip
 h = lgpio.gpiochip_open(0)
 lgpio.gpio_claim_input(h, SENSOR_PIN)
 
-print("Monitoring sensor (GPIO 22)... Press Ctrl+C to exit.")
+def log(message):
+    """Prints to console and appends to log file."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    full_message = f"[{timestamp}] {message}"
+    print(full_message)
+    with open(LOG_FILE, "a") as log_file:
+        log_file.write(full_message + "\n")
+
+log("Monitoring sensor on GPIO 22. Waiting for coils...")
 
 previous_state = 0
 ready_to_capture = True
+coil_count = 0
 
 try:
     while True:
         sensor_state = lgpio.gpio_read(h, SENSOR_PIN)
-        print(f"GPIO 22 state: {sensor_state}", end='\r')
 
-        # Rising edge detected: 0 → 1
+        # Rising edge detected
         if sensor_state == 1 and previous_state == 0 and ready_to_capture:
-            print("\nSensor HIGH detected. Capturing 3 photos...")
+            coil_count += 1
+            coil_dir = os.path.join(BASE_SAVE_DIR, f"coil_{coil_count}")
+            os.makedirs(coil_dir, exist_ok=True)
 
-            for i in range(3):
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                photo_name = f"photo_{timestamp}.jpg"
-                photo_path = os.path.join(SAVE_DIR, photo_name)
+            log(f"Coil {coil_count} detected. Saving to {coil_dir}")
 
-                subprocess.run([
+            for photo_index in range(1, PHOTOS_PER_COIL + 1):
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                photo_name = f"photo_{photo_index}_{timestamp_str}.jpg"
+                photo_path = os.path.join(coil_dir, photo_name)
+
+                result = subprocess.run([
                     "libcamera-still",
+                    "--width", "9152",
+                    "--height", "6944",
+                    "--quality", "100",
                     "--lens-position", "2.0",
+                    "--sharpness", "1",
+                    "--contrast", "0",
+                    "--brightness", "0",
+                    "--saturation", "0",
+                    "--exposure", "normal",
+                    "--awb", "auto",
+                    "--denoise", "cdn_hq",
                     "-o", photo_path,
-                    "--nopreview",
-                    "--timeout", "1"
+                    "--preview",
+                    "--timeout", "1000"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-                print(f"Photo {i+1}/3 saved: {photo_name}")
-                if i < 2:
-                    time.sleep(2)  # Wait 2 seconds between photos
+                if result.returncode == 0:
+                    log(f"Photo {photo_index}/{PHOTOS_PER_COIL} saved: {photo_name}")
+                else:
+                    log(f"Error capturing photo {photo_index}/{PHOTOS_PER_COIL}")
 
-            ready_to_capture = False  # Wait for falling edge to reset
+                if photo_index < PHOTOS_PER_COIL:
+                    time.sleep(3)
 
-        # Falling edge detected: 1 → 0
+            ready_to_capture = False
+
+        # Falling edge: coil leaves
         elif sensor_state == 0 and previous_state == 1:
-            print("\nSensor LOW detected. Ready for next trigger.")
+            log("Coil left. Ready for next detection.")
             ready_to_capture = True
 
         previous_state = sensor_state
-        time.sleep(0.01)  # Short delay to reduce CPU usage
+        time.sleep(0.01)
 
 except KeyboardInterrupt:
     lgpio.gpiochip_close(h)
-    print("\nGPIO cleaned up. Exiting.")
+    log("GPIO cleaned up. Program exited by user.")
