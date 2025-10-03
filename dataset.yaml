@@ -1,0 +1,13 @@
+names:
+  0: Scratch Marks
+  1: Dent Marks
+  2: class_2
+  3: class_3
+  4: class_4
+  5: class_5
+  6: class_6
+  7: Coil Boundary
+nc: 8
+path: C:\Users\Abhishek\Downloads\Projects\Annotations\data
+train: images\train
+val: images\val
