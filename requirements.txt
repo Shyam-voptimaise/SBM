@@ -1,0 +1,6 @@
+flask
+gpiozero
+lgpio
+pypylon
+requests
+waitress

@@ -1,0 +1,17 @@
+[project]
+name = "sbm-coil-capture"
+version = "0.1.0"
+description = "Basler camera coil image capture sender and Flask receiver"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "flask",
+    "gpiozero",
+    "lgpio",
+    "pypylon",
+    "requests",
+    "waitress",
+]
+
+[tool.uv]
+package = false

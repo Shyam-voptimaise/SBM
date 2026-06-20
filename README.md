@@ -40,7 +40,7 @@ This project contains two Python scripts for capturing coil images on one Raspbe
 Install packages:
 
 ```bash
-python -m pip install requests gpiozero lgpio pypylon
+uv sync
 ```
 
 ### Receiver Raspberry Pi / Server
@@ -54,7 +54,13 @@ python -m pip install requests gpiozero lgpio pypylon
 Install packages:
 
 ```bash
-python -m pip install flask waitress
+uv sync
+```
+
+If you prefer syncing directly from `requirements.txt`, run:
+
+```bash
+uv pip sync requirements.txt
 ```
 
 ## Configuration
