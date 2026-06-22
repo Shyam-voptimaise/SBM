@@ -16,6 +16,20 @@ os.makedirs(
 )
 
 
+def safe_folder_name(value, fallback):
+    value = str(value or "").strip()
+
+    if not value:
+        return fallback
+
+    safe_value = "".join(
+        char if char.isalnum() or char in ("_", "-") else "_"
+        for char in value
+    ).strip("_")
+
+    return safe_value or fallback
+
+
 @app.route("/")
 def home():
     return "Receiver Running"
@@ -42,19 +56,29 @@ def upload():
             metadata_str
         )
 
-        coil_no = metadata.get(
-            "coil_no",
-            "UNKNOWN"
+        date_folder = safe_folder_name(
+            metadata.get(
+                "coil_date",
+                datetime.now().strftime("%Y-%m-%d")
+            ),
+            datetime.now().strftime("%Y-%m-%d")
         )
 
-        date_folder = datetime.now().strftime(
-            "%Y-%m-%d"
+        coil_folder = safe_folder_name(
+            metadata.get(
+                "coil_folder",
+                metadata.get(
+                    "coil_no",
+                    "UNKNOWN"
+                )
+            ),
+            "UNKNOWN"
         )
 
         save_folder = os.path.join(
             BASE_DIR,
             date_folder,
-            coil_no
+            coil_folder
         )
 
         os.makedirs(
