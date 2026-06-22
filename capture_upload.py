@@ -54,6 +54,7 @@ CAMERA_RECONNECT_INTERVAL = 5
 
 SAVE_DIR = Path.home() / "coil_images"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
+CAMERA_TEMP_LOG_FILE = SAVE_DIR / "camera_temp.log"
 
 PI2_UPLOAD_URL = "http://192.168.0.106:5000/upload"
 UPLOAD_RETRY_DELAY = 2
@@ -79,6 +80,14 @@ def log(msg):
 
 def build_coil_folder_name(coil, started_at):
     return f"COIL_{started_at.strftime('%Y%m%d_%H%M%S')}_{coil}"
+
+
+def save_camera_temp_log(readings):
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    line = f"{timestamp} | " + ", ".join(readings)
+
+    with open(CAMERA_TEMP_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
 # =============================
@@ -214,9 +223,10 @@ def open_configured_cameras(cameras=None):
     return cameras
 
 
-def read_camera_temperature(cam):
+def read_camera_temperature(camera):
     # Basler device temperature in Celsius on models that expose TemperatureAbs.
-    return cam.TemperatureAbs.Value
+    d = camera.TemperatureAbs.Value
+    return d
 
 
 def log_camera_detection_status(cameras):
@@ -260,6 +270,7 @@ def temperature_worker(cameras, camera_lock):
         if should_reconnect:
             last_reconnect_attempt = now
 
+        save_camera_temp_log(readings)
         log("Camera temperature: " + ", ".join(readings))
         time.sleep(TEMPERATURE_LOG_INTERVAL)
 

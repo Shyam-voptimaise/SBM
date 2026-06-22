@@ -157,6 +157,7 @@ Sender temporary output:
 
 ```text
 ~/coil_images/
+  camera_temp.log
   YYYY-MM-DD/
     COIL_20260622_143052_COIL_1/
       COIL_1_CAM1_CAP1_HHMMSS.bmp
