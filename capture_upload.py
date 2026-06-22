@@ -19,7 +19,7 @@ from pypylon import pylon
 
 GPIO_PIN = 16
 upload_queue = queue.Queue()
-EXPOSURE_TIME = 300000.0
+EXPOSURE_TIME = 500000.0
 GAIN_VALUE = 10.0
 
 CAP1_DELAY = 10
