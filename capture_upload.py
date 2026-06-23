@@ -83,7 +83,7 @@ CAMERA_CONFIGS = [
 HIGH_CONFIRM_TIME = 2
 LOW_CONFIRM_TIME = 5
 TEMPERATURE_LOG_INTERVAL = 30
-CAMERA_SEQUENTIAL_GAP_SECONDS = 0.25
+CAMERA_CAPTURE_PREPARE_SECONDS = 4.0
 
 SAVE_DIR = Path.home() / "coil_images"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -564,11 +564,17 @@ def release_grab_result(result):
         pass
 
 
-def execute_software_trigger(cam):
+def wait_for_frame_trigger_ready(cam, timeout_ms=5000):
     try:
-        cam.WaitForFrameTriggerReady(5000, pylon.TimeoutHandling_ThrowException)
+        cam.WaitForFrameTriggerReady(timeout_ms, pylon.TimeoutHandling_ThrowException)
+        return True
     except Exception:
-        pass
+        return False
+
+
+def execute_software_trigger(cam, wait=True):
+    if wait:
+        wait_for_frame_trigger_ready(cam)
 
     cam.ExecuteSoftwareTrigger()
 
@@ -671,6 +677,8 @@ def capture_image(
     coil_started_at,
     camera_config,
     capture_config,
+    captured_at=None,
+    trigger_now=True,
 ):
     res = None
     img = None
@@ -678,9 +686,14 @@ def capture_image(
     capture_name = capture_config["name"]
 
     try:
-        discard_auto_settle_frames(cam, camera_config, capture_name)
+        if captured_at is None:
+            captured_at = datetime.now()
 
-        execute_software_trigger(cam)
+        if trigger_now:
+            discard_auto_settle_frames(cam, camera_config, capture_name)
+            execute_software_trigger(cam)
+            captured_at = datetime.now()
+
         res = cam.RetrieveResult(5000)
 
         if not res.GrabSucceeded():
@@ -691,7 +704,7 @@ def capture_image(
         folder = SAVE_DIR / date_folder / coil_folder
         folder.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now().strftime("%H%M%S")
+        timestamp = captured_at.strftime("%H%M%S")
         filename = f"{coil}_{camera_name}_{capture_name}_{timestamp}.bmp"
         path = folder / filename
 
@@ -709,13 +722,15 @@ def capture_image(
             "camera_serial_number": camera_config.get("serial_number"),
             "capture_name": capture_name,
             "delay_after_previous": capture_config["delay_after_previous"],
-            "captured_at": datetime.now().isoformat(),
+            "captured_at": captured_at.isoformat(),
+            "saved_at": datetime.now().isoformat(),
         }
         metadata.update(read_capture_settings(cam, camera_config))
 
         upload_queue.put((path, metadata))
         log(
-            f"{camera_name} {capture_name}: saved and queued "
+            f"{camera_name} {capture_name}: captured @ "
+            f"{captured_at.strftime('%H:%M:%S')}, saved and queued "
             f"until upload -> {filename}"
         )
         return True
@@ -758,6 +773,25 @@ def build_capture_schedule():
     return sorted(schedule, key=lambda item: item["capture_at"])
 
 
+def build_capture_groups():
+    groups = []
+
+    for item in build_capture_schedule():
+        if not groups or groups[-1]["capture_at"] != item["capture_at"]:
+            groups.append({"capture_at": item["capture_at"], "items": []})
+
+        groups[-1]["items"].append(item)
+
+    return groups
+
+
+def format_capture_group_label(group):
+    return " + ".join(
+        f"{item['camera_config']['name']} {item['capture_config']['name']}"
+        for item in group["items"]
+    )
+
+
 def wait_until_capture(start_time, capture_at, label):
     while True:
         elapsed = time.monotonic() - start_time
@@ -770,58 +804,151 @@ def wait_until_capture(start_time, capture_at, label):
         time.sleep(min(1, remaining))
 
 
-def process_coil(cameras, camera_lock):
-    global coil_counter
+def prepare_capture_group(group, cameras):
+    active_captures = []
 
-    coil = f"COIL_{coil_counter}"
-    coil_started_at = datetime.now()
-    coil_folder = build_coil_folder_name(coil, coil_started_at)
-    schedule = build_capture_schedule()
-    start_time = time.monotonic()
-
-    log(f"START {coil} -> {coil_folder}")
-
-    for item in schedule:
+    for item in group["items"]:
         camera_config = item["camera_config"]
         capture_config = item["capture_config"]
         camera_name = camera_config["name"]
         capture_name = capture_config["name"]
         label = f"{camera_name} {capture_name}"
 
-        log(f"{label} due at +{item['capture_at']}s (sequential capture)")
-        wait_until_capture(start_time, item["capture_at"], label)
-        log(f"{label} capture starting now")
+        cam = open_camera(camera_config)
+        cameras[camera_name] = cam
 
-        capture_attempted = False
-        capture_ok = False
+        if cam is None:
+            log(f"{label}: skipped because camera is unavailable")
+            continue
 
-        with camera_lock:
-            cam = open_camera(camera_config)
-            cameras[camera_name] = cam
+        discard_auto_settle_frames(cam, camera_config, capture_name)
+        active_captures.append(
+            {
+                "cam": cam,
+                "camera_config": camera_config,
+                "capture_config": capture_config,
+                "label": label,
+                "triggered": False,
+                "captured_at": None,
+            }
+        )
 
-            if cam is None:
-                log(f"{label}: skipped because camera is unavailable")
-            else:
-                capture_attempted = True
-                try:
-                    capture_ok = capture_image(
-                        cam,
-                        coil,
-                        coil_folder,
-                        coil_started_at,
-                        camera_config,
-                        capture_config,
-                    )
-                finally:
-                    close_camera(cam)
-                    cameras[camera_name] = None
-                    log(f"{camera_name}: stopped and closed for idle cooling")
+    return active_captures
 
-        if capture_attempted and not capture_ok:
-            log(f"{label}: capture did not complete")
 
-        if CAMERA_SEQUENTIAL_GAP_SECONDS > 0:
-            time.sleep(CAMERA_SEQUENTIAL_GAP_SECONDS)
+def send_group_triggers(active_captures):
+    for active_capture in active_captures:
+        if not wait_for_frame_trigger_ready(active_capture["cam"], 500):
+            log(f"{active_capture['label']}: trigger-ready wait timed out")
+
+    captured_at = datetime.now()
+
+    for active_capture in active_captures:
+        try:
+            execute_software_trigger(active_capture["cam"], wait=False)
+            active_capture["triggered"] = True
+            active_capture["captured_at"] = captured_at
+            log(
+                f"{active_capture['label']}: software trigger sent @ "
+                f"{captured_at.strftime('%H:%M:%S')}"
+            )
+        except Exception as e:
+            log(f"{active_capture['label']}: software trigger failed: {e}")
+
+
+def save_group_captures(active_captures, coil, coil_folder, coil_started_at):
+    for active_capture in active_captures:
+        if not active_capture["triggered"]:
+            continue
+
+        if not capture_image(
+            active_capture["cam"],
+            coil,
+            coil_folder,
+            coil_started_at,
+            active_capture["camera_config"],
+            active_capture["capture_config"],
+            captured_at=active_capture["captured_at"],
+            trigger_now=False,
+        ):
+            log(f"{active_capture['label']}: capture did not complete")
+
+
+def close_capture_group(cameras, active_captures):
+    for active_capture in active_captures:
+        camera_name = active_capture["camera_config"]["name"]
+        close_camera(active_capture["cam"])
+        cameras[camera_name] = None
+        log(f"{camera_name}: stopped and closed for idle cooling")
+
+
+def process_capture_group(
+    group,
+    cameras,
+    camera_lock,
+    start_time,
+    coil,
+    coil_folder,
+    coil_started_at,
+):
+    capture_at = group["capture_at"]
+    group_label = format_capture_group_label(group)
+    prepare_at = max(0, capture_at - CAMERA_CAPTURE_PREPARE_SECONDS)
+    active_captures = []
+
+    log(f"{group_label} due at +{capture_at}s (group trigger)")
+    wait_until_capture(start_time, prepare_at, f"{group_label} prepare")
+
+    with camera_lock:
+        try:
+            log(f"{group_label}: opening cameras for grouped capture")
+            active_captures = prepare_capture_group(group, cameras)
+
+            if not active_captures:
+                return
+
+            wait_until_capture(start_time, capture_at, f"{group_label} trigger")
+
+            late_by = time.monotonic() - start_time - capture_at
+            if late_by > 0.2:
+                log(
+                    f"{group_label}: trigger late by {late_by:.1f}s; "
+                    "increase CAMERA_CAPTURE_PREPARE_SECONDS if this repeats"
+                )
+
+            log(f"{group_label}: triggering now")
+            send_group_triggers(active_captures)
+            save_group_captures(
+                active_captures,
+                coil,
+                coil_folder,
+                coil_started_at,
+            )
+        finally:
+            close_capture_group(cameras, active_captures)
+
+
+def process_coil(cameras, camera_lock):
+    global coil_counter
+
+    coil = f"COIL_{coil_counter}"
+    coil_started_at = datetime.now()
+    coil_folder = build_coil_folder_name(coil, coil_started_at)
+    capture_groups = build_capture_groups()
+    start_time = time.monotonic()
+
+    log(f"START {coil} -> {coil_folder}")
+
+    for group in capture_groups:
+        process_capture_group(
+            group,
+            cameras,
+            camera_lock,
+            start_time,
+            coil,
+            coil_folder,
+            coil_started_at,
+        )
 
     log("PROCESS COMPLETE")
 

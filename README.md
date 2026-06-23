@@ -13,12 +13,12 @@ This project contains two Python scripts for capturing coil images on one Raspbe
 
 1. The photoelectric sensor is connected to GPIO `16`.
 2. `capture_upload.py` confirms the sensor is HIGH for `2` seconds.
-3. For each confirmed coil, each configured camera is opened only for its capture slot. Captures are sequential, so CAM1 and CAM2 are never grabbing at the same time:
+3. For each confirmed coil, cameras with the same due time are opened briefly, prepared, and software-triggered together:
    - `CAM1 CAP1` after `10` seconds
    - `CAM1 CAP2` after `6` more seconds
    - `CAM2 CAP1` after its own configured delay
    - `CAM2 CAP2` after its own configured second delay
-4. After every capture, the active camera is stopped and closed for idle cooling.
+4. After every capture group, the active camera(s) are stopped and closed for idle cooling.
 5. If a camera is not detected, that camera is logged and skipped while the system keeps running.
 6. Images are saved temporarily under `~/coil_images/YYYY-MM-DD/COIL_YYYYMMDD_HHMMSS_COIL_N/`.
 7. Each image is queued for upload to the receiver at `http://192.168.0.106:5000/upload`.
@@ -130,7 +130,7 @@ CAMERA_CONFIGS = [
 HIGH_CONFIRM_TIME = 2
 LOW_CONFIRM_TIME = 5
 TEMPERATURE_LOG_INTERVAL = 30
-CAMERA_SEQUENTIAL_GAP_SECONDS = 0.25
+CAMERA_CAPTURE_PREPARE_SECONDS = 4.0
 PI2_UPLOAD_URL = "http://192.168.0.106:5000/upload"
 UPLOAD_RETRY_DELAY = 2
 ```
@@ -142,6 +142,8 @@ If the image is still dark, improve lighting first. If you must tune in software
 `BASLER_GIGE_DEFAULTS` applies conservative GigE transport settings when a camera is opened: packet size, inter-packet delay, frame transmission delay, heartbeat timeout, and acquisition frame-rate cap. Unsupported Basler nodes are ignored automatically.
 
 The sender logs each configured camera as `detected/idle` at startup without opening it. During idle time the temperature log reports `idle/off for cooling`; temperature is read only while a camera is already open for capture or metadata.
+
+`CAMERA_CAPTURE_PREPARE_SECONDS` opens and settles cameras shortly before the due time. This keeps idle heat down while allowing CAM1 and CAM2 captures with the same delay to receive software triggers in the same second.
 
 If discovery order changes, set each camera's `serial_number` to the Basler serial number and keep `device_index` as a fallback. The current serials came from the service log: CAM1 `25343487`, CAM2 `25343513`.
 
@@ -209,7 +211,7 @@ Sender temporary output:
 - If a startup line shows a configured camera is not detected, confirm the serial number, camera connection, and network interface IP.
 - If temperature logs say `idle/off for cooling`, that is expected while the cameras are closed between captures.
 - If temperature logs say `temperature unavailable`, confirm your Basler model exposes `TemperatureAbs` or `DeviceTemperature`.
-- If CAM1 and CAM2 appear due at the same timestamp, this is expected; the script still opens and captures one camera at a time.
+- If CAM1 and CAM2 are still triggered late, increase `CAMERA_CAPTURE_PREPARE_SECONDS` so both cameras have enough time to open and settle before the due timestamp.
 - If auto mode saves dark images, add more light or increase `target_brightness`/`gain_upper_limit`; avoid raising `exposure_time_upper_limit` too high because long exposure creates blur on moving coil defects.
 - If auto mode captures too late, lower `auto_settle_frames`; the default `4` unsaved frames gives auto exposure/gain time to settle before the saved frame.
 - If uploads fail, confirm the receiver is running and that `PI2_UPLOAD_URL` matches the receiver IP address.
