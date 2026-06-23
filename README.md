@@ -13,18 +13,19 @@ This project contains two Python scripts for capturing coil images on one Raspbe
 
 1. The photoelectric sensor is connected to GPIO `16`.
 2. `capture_upload.py` confirms the sensor is HIGH for `2` seconds.
-3. For each confirmed coil, each detected configured camera captures two images:
+3. For each confirmed coil, each configured camera is opened only for its capture slot. Captures are sequential, so CAM1 and CAM2 are never grabbing at the same time:
    - `CAM1 CAP1` after `10` seconds
    - `CAM1 CAP2` after `6` more seconds
    - `CAM2 CAP1` after its own configured delay
    - `CAM2 CAP2` after its own configured second delay
-4. If a camera is not detected, that camera is logged and skipped while the system keeps running.
-5. Images are saved temporarily under `~/coil_images/YYYY-MM-DD/COIL_YYYYMMDD_HHMMSS_COIL_N/`.
-6. Each image is queued for upload to the receiver at `http://192.168.0.106:5000/upload`.
-7. Uploads keep retrying in the background until they succeed, even when another coil is triggered.
-8. `receiver.py` stores images under `received_images/YYYY-MM-DD/COIL_YYYYMMDD_HHMMSS_COIL_N/`.
-9. Metadata for each image is saved as a matching `.json` file.
-10. After upload succeeds, the sender deletes its local image copy.
+4. After every capture, the active camera is stopped and closed for idle cooling.
+5. If a camera is not detected, that camera is logged and skipped while the system keeps running.
+6. Images are saved temporarily under `~/coil_images/YYYY-MM-DD/COIL_YYYYMMDD_HHMMSS_COIL_N/`.
+7. Each image is queued for upload to the receiver at `http://192.168.0.106:5000/upload`.
+8. Uploads keep retrying in the background until they succeed, even when another coil is triggered.
+9. `receiver.py` stores images under `received_images/YYYY-MM-DD/COIL_YYYYMMDD_HHMMSS_COIL_N/`.
+10. Metadata for each image is saved as a matching `.json` file.
+11. After upload succeeds, the sender deletes its local image copy.
 
 ## Requirements
 
@@ -69,17 +70,43 @@ uv pip sync requirements.txt
 
 ## Configuration
 
-Update these values in `capture_upload.py` if your hardware or network changes. Each camera has its own device selector, exposure, gain, and capture delays:
+Update these values in `capture_upload.py` if your hardware or network changes. Each camera has its own device selector, image mode, exposure/gain fallback, and capture delays:
 
 ```python
 GPIO_PIN = 16
+
+MANUAL_IMAGE_MODE = "manual"
+AUTO_SHARP_IMAGE_MODE = "auto_sharp"
+
+AUTO_SHARP_DEFAULTS = {
+    "exposure_time_lower_limit": 500.0,
+    "exposure_time_upper_limit": 8000.0,
+    "gain_lower_limit": 0.0,
+    "gain_upper_limit": 8.0,
+    "gain_raw_upper_fraction": 0.35,
+    "target_brightness": 110.0,
+    "auto_settle_frames": 4,
+    "gamma": 1.0,
+    "black_level": 0.0,
+    "noise_reduction_fraction": 0.0,
+    "sharpness_enhancement_fraction": 0.35,
+}
+
+BASLER_GIGE_DEFAULTS = {
+    "packet_size": 1500,
+    "inter_packet_delay": 1000,
+    "frame_transmission_delay": 0,
+    "heartbeat_timeout": 3000,
+    "acquisition_frame_rate": 5.0,
+}
 
 CAMERA_CONFIGS = [
     {
         "name": "CAM1",
         "device_index": 0,
-        "serial_number": None,
-        "exposure_time": 300000.0,
+        "serial_number": "25343487",
+        "image_mode": AUTO_SHARP_IMAGE_MODE,
+        "exposure_time": 500000.0,
         "gain_value": 10.0,
         "captures": [
             {"name": "CAP1", "delay_after_previous": 10},
@@ -89,7 +116,8 @@ CAMERA_CONFIGS = [
     {
         "name": "CAM2",
         "device_index": 1,
-        "serial_number": None,
+        "serial_number": "25343513",
+        "image_mode": AUTO_SHARP_IMAGE_MODE,
         "exposure_time": 300000.0,
         "gain_value": 10.0,
         "captures": [
@@ -101,13 +129,21 @@ CAMERA_CONFIGS = [
 
 HIGH_CONFIRM_TIME = 2
 LOW_CONFIRM_TIME = 5
-TEMPERATURE_LOG_INTERVAL = 1
-CAMERA_RECONNECT_INTERVAL = 5
+TEMPERATURE_LOG_INTERVAL = 30
+CAMERA_SEQUENTIAL_GAP_SECONDS = 0.25
 PI2_UPLOAD_URL = "http://192.168.0.106:5000/upload"
 UPLOAD_RETRY_DELAY = 2
 ```
 
-If USB discovery order changes, set each camera's `serial_number` to the Basler serial number and keep `device_index` as a fallback. The sender starts even if a configured camera is missing, logs `not detected`, and retries detection every `CAMERA_RECONNECT_INTERVAL` seconds.
+`AUTO_SHARP_IMAGE_MODE` is tuned for the Basler ace `acA5472-5gm` when the coil image must stay clear for defect detection. It keeps exposure auto and gain auto enabled, but limits auto exposure to `8000 us` so the camera does not blur moving defects by choosing a long exposure. The script also grabs `auto_settle_frames` unsaved frames before each saved image so Basler's auto exposure/gain can settle while using software trigger mode.
+
+If the image is still dark, improve lighting first. If you must tune in software, raise `target_brightness` slowly or raise `gain_upper_limit`; only increase `exposure_time_upper_limit` after checking that the coil defects are still sharp. To return to the old fixed exposure/gain behavior, set a camera's `image_mode` to `MANUAL_IMAGE_MODE`; then `exposure_time` and `gain_value` are used directly.
+
+`BASLER_GIGE_DEFAULTS` applies conservative GigE transport settings when a camera is opened: packet size, inter-packet delay, frame transmission delay, heartbeat timeout, and acquisition frame-rate cap. Unsupported Basler nodes are ignored automatically.
+
+The sender logs each configured camera as `detected/idle` at startup without opening it. During idle time the temperature log reports `idle/off for cooling`; temperature is read only while a camera is already open for capture or metadata.
+
+If discovery order changes, set each camera's `serial_number` to the Basler serial number and keep `device_index` as a fallback. The current serials came from the service log: CAM1 `25343487`, CAM2 `25343513`.
 
 In `receiver.py`, the server listens on all network interfaces at port `5000`:
 
@@ -170,8 +206,12 @@ Sender temporary output:
 
 - If the sender prints `NO BASLER CAMERAS FOUND`, check both Basler camera connections, Pylon installation, and camera permissions.
 - If the sender reports a missing device index, confirm both cameras are connected or set `serial_number` in `CAMERA_CONFIGS`.
-- If a temperature line shows `CAM2=not detected`, the system is still running and will retry that camera automatically.
-- If temperature logs say `temperature unavailable`, confirm your Basler model exposes `TemperatureAbs`.
+- If a startup line shows a configured camera is not detected, confirm the serial number, camera connection, and network interface IP.
+- If temperature logs say `idle/off for cooling`, that is expected while the cameras are closed between captures.
+- If temperature logs say `temperature unavailable`, confirm your Basler model exposes `TemperatureAbs` or `DeviceTemperature`.
+- If CAM1 and CAM2 appear due at the same timestamp, this is expected; the script still opens and captures one camera at a time.
+- If auto mode saves dark images, add more light or increase `target_brightness`/`gain_upper_limit`; avoid raising `exposure_time_upper_limit` too high because long exposure creates blur on moving coil defects.
+- If auto mode captures too late, lower `auto_settle_frames`; the default `4` unsaved frames gives auto exposure/gain time to settle before the saved frame.
 - If uploads fail, confirm the receiver is running and that `PI2_UPLOAD_URL` matches the receiver IP address.
 - If no coil is detected, verify the sensor wiring, GPIO pin number, and signal level.
 - Keep both systems on the same network unless port forwarding or routing is configured.

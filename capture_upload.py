@@ -19,6 +19,37 @@ Device.pin_factory = LGPIOFactory()
 
 GPIO_PIN = 16
 
+MANUAL_IMAGE_MODE = "manual"
+AUTO_SHARP_IMAGE_MODE = "auto_sharp"
+
+# Basler ace acA5472-5gm sharp auto preset.
+# Keep auto exposure short to reduce motion blur on coil defects. If images are
+# still dark at these values, add light before increasing exposure too much.
+AUTO_SHARP_DEFAULTS = {
+    "exposure_time_lower_limit": 500.0,
+    "exposure_time_upper_limit": 8000.0,
+    "gain_lower_limit": 0.0,
+    "gain_upper_limit": 8.0,
+    "gain_raw_upper_fraction": 0.35,
+    "target_brightness": 110.0,
+    "auto_settle_frames": 4,
+    "gamma": 1.0,
+    "black_level": 0.0,
+    "noise_reduction_fraction": 0.0,
+    "sharpness_enhancement_fraction": 0.35,
+}
+
+# Basler ace GigE transport/acquisition guardrails. These are best-effort:
+# unsupported nodes are ignored so the same script can run across pylon/SFNC
+# versions.
+BASLER_GIGE_DEFAULTS = {
+    "packet_size": 1500,
+    "inter_packet_delay": 1000,
+    "frame_transmission_delay": 0,
+    "heartbeat_timeout": 3000,
+    "acquisition_frame_rate": 5.0,
+}
+
 # Each camera has its own exposure, gain, device selector, and capture delays.
 # delay_after_previous is cumulative per camera:
 # CAM1 CAP1 at 10s and CAM1 CAP2 at 16s with the default values below.
@@ -26,8 +57,9 @@ CAMERA_CONFIGS = [
     {
         "name": "CAM1",
         "device_index": 0,
-        "serial_number": None,
-        "exposure_time": 300000.0,
+        "serial_number": "25343487",
+        "image_mode": AUTO_SHARP_IMAGE_MODE,
+        "exposure_time": 500000.0,
         "gain_value": 10.0,
         "captures": [
             {"name": "CAP1", "delay_after_previous": 10},
@@ -37,7 +69,8 @@ CAMERA_CONFIGS = [
     {
         "name": "CAM2",
         "device_index": 1,
-        "serial_number": None,
+        "serial_number": "25343513",
+        "image_mode": AUTO_SHARP_IMAGE_MODE,
         "exposure_time": 300000.0,
         "gain_value": 10.0,
         "captures": [
@@ -49,8 +82,8 @@ CAMERA_CONFIGS = [
 
 HIGH_CONFIRM_TIME = 2
 LOW_CONFIRM_TIME = 5
-TEMPERATURE_LOG_INTERVAL = 1
-CAMERA_RECONNECT_INTERVAL = 5
+TEMPERATURE_LOG_INTERVAL = 30
+CAMERA_SEQUENTIAL_GAP_SECONDS = 0.25
 
 SAVE_DIR = Path.home() / "coil_images"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -94,24 +127,292 @@ def save_camera_temp_log(readings):
 # CAMERA
 # =============================
 
+def node_names(names):
+    if isinstance(names, str):
+        return (names,)
+
+    return names
+
+
+def get_camera_node(cam, names):
+    for name in node_names(names):
+        try:
+            return getattr(cam, name)
+        except Exception:
+            continue
+
+    return None
+
+
+def read_camera_node(cam, names):
+    node = get_camera_node(cam, names)
+
+    if node is None:
+        return None
+
+    try:
+        return node.GetValue()
+    except Exception:
+        try:
+            return node.Value
+        except Exception:
+            return None
+
+
+def coerce_camera_node_value(node, value):
+    try:
+        minimum = node.GetMin()
+        maximum = node.GetMax()
+        value = max(minimum, min(maximum, value))
+    except Exception:
+        pass
+
+    try:
+        current = node.GetValue()
+        if isinstance(current, int) and not isinstance(current, bool):
+            try:
+                increment = node.GetInc()
+                minimum = node.GetMin()
+
+                if increment:
+                    value = minimum + round((value - minimum) / increment) * increment
+            except Exception:
+                pass
+
+            return int(round(value))
+    except Exception:
+        pass
+
+    return value
+
+
+def set_camera_node(cam, names, value):
+    if value is None:
+        return False
+
+    for name in node_names(names):
+        try:
+            node = getattr(cam, name)
+            node.SetValue(coerce_camera_node_value(node, value))
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def set_camera_node_fraction(cam, names, fraction):
+    fraction = max(0.0, min(1.0, fraction))
+
+    for name in node_names(names):
+        try:
+            node = getattr(cam, name)
+            minimum = node.GetMin()
+            maximum = node.GetMax()
+            value = minimum + ((maximum - minimum) * fraction)
+            node.SetValue(coerce_camera_node_value(node, value))
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def set_auto_target_brightness(cam, target_brightness):
+    for name in (
+        "AutoTargetBrightness",
+        "AutoTargetValue",
+        "AutoTargetValueRaw",
+    ):
+        try:
+            node = getattr(cam, name)
+            minimum = node.GetMin()
+            maximum = node.GetMax()
+            value = target_brightness
+
+            if maximum <= 1.0 and value > 1.0:
+                value = value / 255.0
+            elif maximum > 255.0 and value <= 255.0:
+                value = minimum + ((maximum - minimum) * (value / 255.0))
+
+            node.SetValue(coerce_camera_node_value(node, value))
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def set_auto_function_profile_for_sharpness(cam):
+    node = get_camera_node(cam, "AutoFunctionProfile")
+
+    if node is None:
+        return False
+
+    try:
+        for symbol in node.GetSymbolics():
+            normalized = symbol.lower()
+
+            if "exposure" in normalized and (
+                "min" in normalized or "short" in normalized
+            ):
+                node.SetValue(symbol)
+                return True
+    except Exception:
+        pass
+
+    for symbol in (
+        "ExposureMinimum",
+        "ExposureTimeMinimum",
+        "MinimizeExposureTime",
+    ):
+        try:
+            node.SetValue(symbol)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def configure_auto_function_roi(cam):
+    width = read_camera_node(cam, "Width")
+    height = read_camera_node(cam, "Height")
+
+    for selector, brightness_node, offset_x, offset_y, roi_width, roi_height in (
+        (
+            "AutoFunctionROISelector",
+            "AutoFunctionROIUseBrightness",
+            "AutoFunctionROIOffsetX",
+            "AutoFunctionROIOffsetY",
+            "AutoFunctionROIWidth",
+            "AutoFunctionROIHeight",
+        ),
+        (
+            "AutoFunctionAOISelector",
+            "AutoFunctionAOIUsageIntensity",
+            "AutoFunctionAOIOffsetX",
+            "AutoFunctionAOIOffsetY",
+            "AutoFunctionAOIWidth",
+            "AutoFunctionAOIHeight",
+        ),
+    ):
+        set_camera_node(cam, selector, "ROI1")
+        set_camera_node(cam, selector, "AOI1")
+        set_camera_node(cam, brightness_node, True)
+        set_camera_node(cam, offset_x, 0)
+        set_camera_node(cam, offset_y, 0)
+
+        if width is not None:
+            set_camera_node(cam, roi_width, width)
+
+        if height is not None:
+            set_camera_node(cam, roi_height, height)
+
+
+def get_auto_sharp_settings(config):
+    settings = dict(AUTO_SHARP_DEFAULTS)
+    settings.update(config.get("auto_sharp_settings", {}))
+    return settings
+
+
+def get_basler_gige_settings(config):
+    settings = dict(BASLER_GIGE_DEFAULTS)
+    settings.update(config.get("gige_settings", {}))
+    return settings
+
+
+def configure_basler_gige_camera(cam, config):
+    settings = get_basler_gige_settings(config)
+
+    set_camera_node(cam, "GevSCPSPacketSize", settings["packet_size"])
+    set_camera_node(cam, "GevSCPD", settings["inter_packet_delay"])
+    set_camera_node(cam, "GevSCFTD", settings["frame_transmission_delay"])
+    set_camera_node(cam, "GevHeartbeatTimeout", settings["heartbeat_timeout"])
+
+    if set_camera_node(cam, "AcquisitionFrameRateEnable", True):
+        set_camera_node(
+            cam,
+            ("AcquisitionFrameRate", "AcquisitionFrameRateAbs"),
+            settings["acquisition_frame_rate"],
+        )
+
+
+def configure_manual_camera(cam, config):
+    set_camera_node(cam, "ExposureAuto", "Off")
+
+    if not set_camera_node(
+        cam,
+        ("ExposureTime", "ExposureTimeAbs"),
+        config["exposure_time"],
+    ):
+        log(f"{config['name']}: exposure time could not be set")
+
+    set_camera_node(cam, "GainAuto", "Off")
+
+    if not set_camera_node(cam, ("Gain", "GainRaw"), config["gain_value"]):
+        log(f"{config['name']}: gain could not be set")
+
+
+def configure_auto_sharp_camera(cam, config):
+    settings = get_auto_sharp_settings(config)
+
+    set_camera_node(cam, "ExposureMode", "Timed")
+    set_camera_node(cam, "GammaEnable", False)
+    set_camera_node(cam, "Gamma", settings["gamma"])
+    set_camera_node(cam, ("BlackLevel", "BlackLevelRaw"), settings["black_level"])
+
+    set_camera_node_fraction(
+        cam,
+        ("NoiseReduction", "BslNoiseReduction"),
+        settings["noise_reduction_fraction"],
+    )
+    set_camera_node_fraction(
+        cam,
+        ("SharpnessEnhancement", "BslSharpnessEnhancement"),
+        settings["sharpness_enhancement_fraction"],
+    )
+
+    configure_auto_function_roi(cam)
+    set_auto_function_profile_for_sharpness(cam)
+
+    set_camera_node(
+        cam,
+        ("AutoExposureTimeLowerLimit", "AutoExposureTimeAbsLowerLimit"),
+        settings["exposure_time_lower_limit"],
+    )
+    set_camera_node(
+        cam,
+        ("AutoExposureTimeUpperLimit", "AutoExposureTimeAbsUpperLimit"),
+        settings["exposure_time_upper_limit"],
+    )
+
+    if set_camera_node(cam, "AutoGainLowerLimit", settings["gain_lower_limit"]):
+        set_camera_node(cam, "AutoGainUpperLimit", settings["gain_upper_limit"])
+    else:
+        set_camera_node_fraction(cam, "AutoGainRawLowerLimit", 0.0)
+        set_camera_node_fraction(
+            cam,
+            "AutoGainRawUpperLimit",
+            settings["gain_raw_upper_fraction"],
+        )
+
+    set_auto_target_brightness(cam, settings["target_brightness"])
+    set_camera_node(cam, "ExposureAuto", "Continuous")
+    set_camera_node(cam, "GainAuto", "Continuous")
+
+
 def configure_camera(cam, config):
     cam.Open()
     cam.AcquisitionMode.SetValue("Continuous")
+    configure_basler_gige_camera(cam, config)
 
-    cam.ExposureAuto.SetValue("Off")
-    try:
-        cam.ExposureTime.SetValue(config["exposure_time"])
-    except Exception:
-        cam.ExposureTimeAbs.SetValue(config["exposure_time"])
+    image_mode = config.get("image_mode", MANUAL_IMAGE_MODE)
 
-    try:
-        cam.GainAuto.SetValue("Off")
-        cam.Gain.SetValue(config["gain_value"])
-    except Exception:
-        try:
-            cam.GainRaw.SetValue(int(config["gain_value"]))
-        except Exception:
-            pass
+    if image_mode == AUTO_SHARP_IMAGE_MODE:
+        configure_auto_sharp_camera(cam, config)
+    else:
+        configure_manual_camera(cam, config)
 
     cam.TriggerMode.SetValue("On")
     cam.TriggerSource.SetValue("Software")
@@ -135,7 +436,7 @@ def get_device_label(device):
     return " / ".join(details) if details else "UNKNOWN DEVICE"
 
 
-def find_camera_device(devices, config):
+def find_camera_device(devices, config, log_missing=True):
     serial_number = config.get("serial_number")
 
     if serial_number:
@@ -146,16 +447,20 @@ def find_camera_device(devices, config):
             except Exception:
                 continue
 
-        log(f"{config['name']}: serial number {serial_number} not found")
+        if log_missing:
+            log(f"{config['name']}: serial number {serial_number} not found")
+
         return None
 
     device_index = config.get("device_index", 0)
 
     if device_index < 0 or device_index >= len(devices):
-        log(
-            f"{config['name']}: device index {device_index} not found; "
-            f"{len(devices)} Basler camera(s) detected"
-        )
+        if log_missing:
+            log(
+                f"{config['name']}: device index {device_index} not found; "
+                f"{len(devices)} Basler camera(s) detected"
+            )
+
         return None
 
     return devices[device_index]
@@ -205,47 +510,135 @@ def open_camera(config):
         close_camera(cam)
         return None
 
-    log(f"{config['name']}: camera ready ({get_device_label(device)})")
+    log(f"{config['name']}: camera opened ({get_device_label(device)})")
     return cam
 
 
-def open_configured_cameras(cameras=None):
-    cameras = cameras or {}
+def log_configured_camera_detection_status():
+    factory = pylon.TlFactory.GetInstance()
+    devices = factory.EnumerateDevices()
+
+    if not devices:
+        log("NO BASLER CAMERAS FOUND")
+        return
 
     for config in CAMERA_CONFIGS:
-        name = config["name"]
+        camera_name = config["name"]
+        device = find_camera_device(devices, config)
 
-        if cameras.get(name) is not None:
+        if device is None:
+            log(f"{camera_name}: camera not detected; system will continue")
             continue
 
-        cameras[name] = open_camera(config)
-
-    return cameras
+        log(
+            f"{camera_name}: camera detected/idle "
+            f"({get_device_label(device)})"
+        )
 
 
 def read_camera_temperature(camera):
-    # Basler device temperature in Celsius on models that expose TemperatureAbs.
-    d = camera.TemperatureAbs.Value
-    return d
+    # Basler ace classic models expose TemperatureAbs. Newer SFNC models often
+    # expose DeviceTemperature, optionally behind a DeviceTemperatureSelector.
+    for selector in ("Sensor", "Coreboard", "Mainboard", "Camera"):
+        set_camera_node(camera, "DeviceTemperatureSelector", selector)
+        temperature = read_camera_node(camera, "DeviceTemperature")
+
+        if temperature is not None:
+            return temperature
+
+    temperature = read_camera_node(camera, "TemperatureAbs")
+
+    if temperature is not None:
+        return temperature
+
+    raise RuntimeError("temperature node not available")
 
 
-def log_camera_detection_status(cameras):
-    for config in CAMERA_CONFIGS:
-        camera_name = config["name"]
+def release_grab_result(result):
+    if result is None:
+        return
 
-        if cameras.get(camera_name) is None:
-            log(f"{camera_name}: camera not detected; system will continue")
+    try:
+        result.Release()
+    except Exception:
+        pass
+
+
+def execute_software_trigger(cam):
+    try:
+        cam.WaitForFrameTriggerReady(5000, pylon.TimeoutHandling_ThrowException)
+    except Exception:
+        pass
+
+    cam.ExecuteSoftwareTrigger()
+
+
+def discard_auto_settle_frames(cam, camera_config, capture_name):
+    if camera_config.get("image_mode") != AUTO_SHARP_IMAGE_MODE:
+        return
+
+    settings = get_auto_sharp_settings(camera_config)
+    settle_frames = int(settings.get("auto_settle_frames", 0))
+    camera_name = camera_config["name"]
+
+    for frame_no in range(settle_frames):
+        result = None
+
+        try:
+            execute_software_trigger(cam)
+            result = cam.RetrieveResult(5000)
+
+            if not result.GrabSucceeded():
+                log(
+                    f"{camera_name} {capture_name}: "
+                    f"auto settle frame {frame_no + 1} failed"
+                )
+                return
+        except Exception as e:
+            log(
+                f"{camera_name} {capture_name}: "
+                f"auto settle frame {frame_no + 1} error: {e}"
+            )
+            return
+        finally:
+            release_grab_result(result)
+
+
+def read_capture_settings(cam, camera_config):
+    settings = {
+        "image_mode": camera_config.get("image_mode", MANUAL_IMAGE_MODE),
+        "exposure_auto": read_camera_node(cam, "ExposureAuto"),
+        "exposure_time": read_camera_node(
+            cam,
+            ("ExposureTime", "ExposureTimeAbs"),
+        ),
+        "gain_auto": read_camera_node(cam, "GainAuto"),
+        "gain": read_camera_node(cam, ("Gain", "GainRaw")),
+        "auto_target_brightness": read_camera_node(
+            cam,
+            ("AutoTargetBrightness", "AutoTargetValue", "AutoTargetValueRaw"),
+        ),
+        "gige_packet_size": read_camera_node(cam, "GevSCPSPacketSize"),
+        "gige_inter_packet_delay": read_camera_node(cam, "GevSCPD"),
+        "gige_frame_transmission_delay": read_camera_node(cam, "GevSCFTD"),
+        "gige_heartbeat_timeout": read_camera_node(cam, "GevHeartbeatTimeout"),
+        "acquisition_frame_rate": read_camera_node(
+            cam,
+            ("AcquisitionFrameRate", "AcquisitionFrameRateAbs"),
+        ),
+    }
+
+    try:
+        settings["camera_temperature_c"] = read_camera_temperature(cam)
+    except Exception:
+        settings["camera_temperature_c"] = None
+
+    return settings
 
 
 def temperature_worker(cameras, camera_lock):
-    last_reconnect_attempt = time.monotonic()
-
     while True:
         readings = []
-        now = time.monotonic()
-        should_reconnect = (
-            now - last_reconnect_attempt >= CAMERA_RECONNECT_INTERVAL
-        )
 
         with camera_lock:
             for config in CAMERA_CONFIGS:
@@ -253,22 +646,14 @@ def temperature_worker(cameras, camera_lock):
                 cam = cameras.get(camera_name)
 
                 if cam is None:
-                    if should_reconnect:
-                        cam = open_camera(config)
-                        cameras[camera_name] = cam
-
-                    if cam is None:
-                        readings.append(f"{camera_name}=not detected")
-                        continue
+                    readings.append(f"{camera_name}=idle/off for cooling")
+                    continue
 
                 try:
                     temperature = read_camera_temperature(cam)
                     readings.append(f"{camera_name}={temperature:.1f} C")
                 except Exception as e:
                     readings.append(f"{camera_name}=temperature unavailable ({e})")
-
-        if should_reconnect:
-            last_reconnect_attempt = now
 
         save_camera_temp_log(readings)
         log("Camera temperature: " + ", ".join(readings))
@@ -293,7 +678,9 @@ def capture_image(
     capture_name = capture_config["name"]
 
     try:
-        cam.ExecuteSoftwareTrigger()
+        discard_auto_settle_frames(cam, camera_config, capture_name)
+
+        execute_software_trigger(cam)
         res = cam.RetrieveResult(5000)
 
         if not res.GrabSucceeded():
@@ -324,6 +711,7 @@ def capture_image(
             "delay_after_previous": capture_config["delay_after_previous"],
             "captured_at": datetime.now().isoformat(),
         }
+        metadata.update(read_capture_settings(cam, camera_config))
 
         upload_queue.put((path, metadata))
         log(
@@ -344,10 +732,7 @@ def capture_image(
                 pass
 
         if res is not None:
-            try:
-                res.Release()
-            except Exception:
-                pass
+            release_grab_result(res)
 
 
 # =============================
@@ -403,32 +788,40 @@ def process_coil(cameras, camera_lock):
         capture_name = capture_config["name"]
         label = f"{camera_name} {capture_name}"
 
-        log(f"{label} scheduled at +{item['capture_at']}s")
+        log(f"{label} due at +{item['capture_at']}s (sequential capture)")
         wait_until_capture(start_time, item["capture_at"], label)
         log(f"{label} capture starting now")
 
+        capture_attempted = False
+        capture_ok = False
+
         with camera_lock:
-            cam = cameras.get(camera_name)
+            cam = open_camera(camera_config)
+            cameras[camera_name] = cam
 
             if cam is None:
-                cam = open_camera(camera_config)
-                cameras[camera_name] = cam
+                log(f"{label}: skipped because camera is unavailable")
+            else:
+                capture_attempted = True
+                try:
+                    capture_ok = capture_image(
+                        cam,
+                        coil,
+                        coil_folder,
+                        coil_started_at,
+                        camera_config,
+                        capture_config,
+                    )
+                finally:
+                    close_camera(cam)
+                    cameras[camera_name] = None
+                    log(f"{camera_name}: stopped and closed for idle cooling")
 
-        if cam is None:
-            log(f"{label}: skipped because camera is unavailable")
-            continue
+        if capture_attempted and not capture_ok:
+            log(f"{label}: capture did not complete")
 
-        with camera_lock:
-            if not capture_image(
-                cam,
-                coil,
-                coil_folder,
-                coil_started_at,
-                camera_config,
-                capture_config,
-            ):
-                close_camera(cam)
-                cameras[camera_name] = open_camera(camera_config)
+        if CAMERA_SEQUENTIAL_GAP_SECONDS > 0:
+            time.sleep(CAMERA_SEQUENTIAL_GAP_SECONDS)
 
     log("PROCESS COMPLETE")
 
@@ -511,8 +904,7 @@ def main():
 
     try:
         with camera_lock:
-            cameras = open_configured_cameras(cameras)
-            log_camera_detection_status(cameras)
+            log_configured_camera_detection_status()
 
         threading.Thread(target=uploader_worker, daemon=True).start()
         threading.Thread(
