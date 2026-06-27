@@ -94,6 +94,7 @@ UPLOAD_RETRY_DELAY = 2
 
 upload_queue = queue.Queue()
 coil_counter = 1
+coil_counter_date = datetime.now().date()
 
 
 # =============================
@@ -113,6 +114,21 @@ def log(msg):
 
 def build_coil_folder_name(coil, started_at):
     return f"COIL_{started_at.strftime('%Y%m%d_%H%M%S')}_{coil}"
+
+
+def start_next_coil():
+    global coil_counter, coil_counter_date
+
+    started_at = datetime.now()
+    current_date = started_at.date()
+
+    if coil_counter_date != current_date:
+        coil_counter = 1
+        coil_counter_date = current_date
+        log(f"New date {current_date.isoformat()}: coil counter reset to 1")
+
+    coil = f"COIL_{coil_counter}"
+    return coil, started_at
 
 
 def save_camera_temp_log(readings):
@@ -931,8 +947,7 @@ def process_capture_group(
 def process_coil(cameras, camera_lock):
     global coil_counter
 
-    coil = f"COIL_{coil_counter}"
-    coil_started_at = datetime.now()
+    coil, coil_started_at = start_next_coil()
     coil_folder = build_coil_folder_name(coil, coil_started_at)
     capture_groups = build_capture_groups()
     start_time = time.monotonic()
