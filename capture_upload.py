@@ -95,6 +95,7 @@ UPLOAD_RETRY_DELAY = 2
 upload_queue = queue.Queue()
 coil_counter = 1
 coil_counter_date = datetime.now().date()
+last_camera_temperatures = {}
 
 
 # =============================
@@ -137,6 +138,40 @@ def save_camera_temp_log(readings):
 
     with open(CAMERA_TEMP_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def remember_camera_temperature(camera_name, temperature, measured_at=None):
+    if temperature is None:
+        return None
+
+    try:
+        temperature = float(temperature)
+    except (TypeError, ValueError):
+        return None
+
+    if measured_at is None:
+        measured_at = datetime.now()
+
+    measurement = {
+        "temperature_c": temperature,
+        "measured_at": measured_at,
+    }
+    last_camera_temperatures[camera_name] = measurement
+    return measurement
+
+
+def get_last_camera_temperature(camera_name):
+    return last_camera_temperatures.get(camera_name)
+
+
+def format_last_camera_temperature(camera_name):
+    measurement = get_last_camera_temperature(camera_name)
+
+    if measurement is None:
+        return None
+
+    measured_at = measurement["measured_at"].strftime("%H:%M:%S")
+    return f"last {measurement['temperature_c']:.1f} C @ {measured_at}"
 
 
 # =============================
@@ -651,9 +686,23 @@ def read_capture_settings(cam, camera_config):
     }
 
     try:
-        settings["camera_temperature_c"] = read_camera_temperature(cam)
+        temperature = read_camera_temperature(cam)
+        measurement = remember_camera_temperature(camera_config["name"], temperature)
+        settings["camera_temperature_c"] = temperature
+
+        if measurement is not None:
+            settings["camera_temperature_measured_at"] = (
+                measurement["measured_at"].isoformat()
+            )
     except Exception:
         settings["camera_temperature_c"] = None
+
+        measurement = get_last_camera_temperature(camera_config["name"])
+        if measurement is not None:
+            settings["last_camera_temperature_c"] = measurement["temperature_c"]
+            settings["last_camera_temperature_measured_at"] = (
+                measurement["measured_at"].isoformat()
+            )
 
     return settings
 
@@ -668,14 +717,33 @@ def temperature_worker(cameras, camera_lock):
                 cam = cameras.get(camera_name)
 
                 if cam is None:
-                    readings.append(f"{camera_name}=idle/off for cooling")
+                    last_temperature = format_last_camera_temperature(camera_name)
+
+                    if last_temperature is None:
+                        readings.append(f"{camera_name}=idle/off for cooling")
+                    else:
+                        readings.append(
+                            f"{camera_name}=idle/off for cooling "
+                            f"({last_temperature})"
+                        )
                     continue
 
                 try:
                     temperature = read_camera_temperature(cam)
+                    remember_camera_temperature(camera_name, temperature)
                     readings.append(f"{camera_name}={temperature:.1f} C")
                 except Exception as e:
-                    readings.append(f"{camera_name}=temperature unavailable ({e})")
+                    last_temperature = format_last_camera_temperature(camera_name)
+
+                    if last_temperature is None:
+                        readings.append(
+                            f"{camera_name}=temperature unavailable ({e})"
+                        )
+                    else:
+                        readings.append(
+                            f"{camera_name}=temperature unavailable "
+                            f"({e}; {last_temperature})"
+                        )
 
         save_camera_temp_log(readings)
         log("Camera temperature: " + ", ".join(readings))

@@ -141,7 +141,7 @@ If the image is still dark, improve lighting first. If you must tune in software
 
 `BASLER_GIGE_DEFAULTS` applies conservative GigE transport settings when a camera is opened: packet size, inter-packet delay, frame transmission delay, heartbeat timeout, and acquisition frame-rate cap. Unsupported Basler nodes are ignored automatically.
 
-The sender logs each configured camera as `detected/idle` at startup without opening it. During idle time the temperature log reports `idle/off for cooling`; temperature is read only while a camera is already open for capture or metadata.
+The sender logs each configured camera as `detected/idle` at startup without opening it. During idle time the temperature log reports `idle/off for cooling`; after the first successful reading, it also shows the last measured temperature and time. Temperature is read only while a camera is already open for capture or metadata.
 
 `CAMERA_CAPTURE_PREPARE_SECONDS` opens and settles cameras shortly before the due time. This keeps idle heat down while allowing CAM1 and CAM2 captures with the same delay to receive software triggers in the same second.
 
@@ -209,7 +209,7 @@ Sender temporary output:
 - If the sender prints `NO BASLER CAMERAS FOUND`, check both Basler camera connections, Pylon installation, and camera permissions.
 - If the sender reports a missing device index, confirm both cameras are connected or set `serial_number` in `CAMERA_CONFIGS`.
 - If a startup line shows a configured camera is not detected, confirm the serial number, camera connection, and network interface IP.
-- If temperature logs say `idle/off for cooling`, that is expected while the cameras are closed between captures.
+- If temperature logs say `idle/off for cooling`, that is expected while the cameras are closed between captures. After the next successful camera-open reading, the same line will include the last measured temperature.
 - If temperature logs say `temperature unavailable`, confirm your Basler model exposes `TemperatureAbs` or `DeviceTemperature`.
 - If CAM1 and CAM2 are still triggered late, increase `CAMERA_CAPTURE_PREPARE_SECONDS` so both cameras have enough time to open and settle before the due timestamp.
 - If auto mode saves dark images, add more light or increase `target_brightness`/`gain_upper_limit`; avoid raising `exposure_time_upper_limit` too high because long exposure creates blur on moving coil defects.
