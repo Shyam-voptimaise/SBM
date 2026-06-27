@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence
 
 from capture.capture import build_capture_metadata, build_image_filename
 from capture.models import CameraConfig, CaptureConfig, QueuedUpload
+from capture.time_utils import ist_date, now_ist
 
 LOGGER = logging.getLogger(__name__)
 
@@ -227,24 +228,22 @@ class BaslerCameraManager:
                 )
                 return False
 
-            date_folder = coil_started_at.strftime("%Y-%m-%d")
+            date_folder = ist_date(coil_started_at)
             folder = self.save_dir / date_folder / coil_folder
             folder.mkdir(parents=True, exist_ok=True)
 
-            filename_timestamp = datetime.now()
             filename = build_image_filename(
                 coil_no,
                 camera_config.name,
                 capture_config.name,
-                filename_timestamp,
             )
-            path = folder / filename
+            path = _unique_path(folder / filename)
 
             image = pylon.PylonImage()
             image.AttachGrabResultBuffer(result)
             image.Save(pylon.ImageFileFormat_Bmp, str(path))
 
-            captured_at = datetime.now()
+            captured_at = now_ist()
             metadata = build_capture_metadata(
                 coil_no,
                 coil_folder,
@@ -319,3 +318,15 @@ def _load_pylon():
     from pypylon import pylon
 
     return pylon
+
+
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{path.stem}_{index:03d}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+
+    raise FileExistsError(f"could not find unique image filename for {path}")

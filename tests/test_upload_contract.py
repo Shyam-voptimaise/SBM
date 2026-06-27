@@ -20,7 +20,7 @@ def upload_config():
 
 
 def test_upload_file_uses_receiver_contract_and_adds_uploaded_at(tmp_path):
-    image_path = tmp_path / "COIL_1_CAM1_CAP1_123456.bmp"
+    image_path = tmp_path / "cam_01_cap_01_coil_01.bmp"
     image_path.write_bytes(b"BMfake")
     calls = []
 
@@ -40,7 +40,7 @@ def test_upload_file_uses_receiver_contract_and_adds_uploaded_at(tmp_path):
 
     ok = upload_file(
         image_path,
-        {"coil_no": "COIL_1"},
+        {"coil_no": "01"},
         upload_config(),
         post=fake_post,
         now=lambda: datetime(2026, 1, 2, 3, 4, 5),
@@ -50,13 +50,13 @@ def test_upload_file_uses_receiver_contract_and_adds_uploaded_at(tmp_path):
     assert calls == [
         {
             "url": "http://receiver.example/upload",
-            "filename": "COIL_1_CAM1_CAP1_123456.bmp",
+            "filename": "cam_01_cap_01_coil_01.bmp",
             "content": b"BMfake",
             "content_type": "image/bmp",
             "data": {
                 "metadata": json.dumps(
                     {
-                        "coil_no": "COIL_1",
+                        "coil_no": "01",
                         "uploaded_at": "2026-01-02T03:04:05",
                     }
                 )
@@ -70,7 +70,7 @@ def test_process_upload_item_deletes_file_after_success(tmp_path):
     image_path = tmp_path / "image.bmp"
     image_path.write_bytes(b"BMfake")
     retry_queue = queue.Queue()
-    item = QueuedUpload(image_path, {"coil_no": "COIL_1"})
+    item = QueuedUpload(image_path, {"coil_no": "01"})
 
     ok = process_upload_item(
         item,
@@ -88,7 +88,7 @@ def test_process_upload_item_requeues_and_keeps_file_after_failure(tmp_path):
     image_path = tmp_path / "image.bmp"
     image_path.write_bytes(b"BMfake")
     retry_queue = queue.Queue()
-    item = QueuedUpload(image_path, {"coil_no": "COIL_1"})
+    item = QueuedUpload(image_path, {"coil_no": "01"})
 
     ok = process_upload_item(
         item,

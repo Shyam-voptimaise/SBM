@@ -2,17 +2,17 @@ import logging
 import queue
 import threading
 import time
-from datetime import datetime
 from typing import Optional
 
 from capture.camera import BaslerCameraManager
 from capture.capture import (
     build_capture_schedule,
     build_coil_folder_name,
-    build_coil_no,
 )
 from capture.gpio import create_trigger
 from capture.models import QueuedUpload, RuntimeConfig
+from capture.sequence import CoilSequenceStore
+from capture.time_utils import now_ist
 from capture.uploader import uploader_worker
 
 LOGGER = logging.getLogger(__name__)
@@ -29,7 +29,10 @@ class CaptureRuntime:
         self.logger = logger or LOGGER
         self.upload_queue: "queue.Queue[QueuedUpload]" = queue.Queue()
         self.stop_event = threading.Event()
-        self.coil_counter = 1
+        self.sequence_store = CoilSequenceStore(
+            self.config.paths.save_dir,
+            logger=self.logger,
+        )
         self.camera_manager = BaslerCameraManager(
             self.config.cameras,
             self.config.paths.save_dir,
@@ -112,7 +115,7 @@ class CaptureRuntime:
 
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().isoformat(timespec="seconds")
+            timestamp = now_ist().isoformat(timespec="seconds")
             line = f"{timestamp} | " + ", ".join(readings)
             with log_file.open("a", encoding="utf-8") as file:
                 file.write(line + "\n")
@@ -158,7 +161,7 @@ class CaptureRuntime:
                     if elapsed >= self.config.gpio.high_confirm_seconds:
                         self.logger.info(
                             "coil confirmed at %s",
-                            datetime.now().strftime("%H:%M:%S"),
+                            now_ist().strftime("%H:%M:%S"),
                         )
                         self._process_coil()
                         state = state_wait_low
@@ -203,8 +206,8 @@ class CaptureRuntime:
                 self.stop_event.wait(POLL_INTERVAL_SECONDS)
 
     def _process_coil(self) -> None:
-        coil_no = build_coil_no(self.coil_counter)
-        coil_started_at = datetime.now()
+        coil_no = self.sequence_store.next_coil_number()
+        coil_started_at = now_ist()
         coil_folder = build_coil_folder_name(coil_no, coil_started_at)
         schedule = build_capture_schedule(self.config.cameras)
         start_time = time.monotonic()
@@ -236,8 +239,6 @@ class CaptureRuntime:
                 camera,
                 capture,
             )
-
-        self.coil_counter += 1
 
     def _wait_until_capture(
         self,

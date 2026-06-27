@@ -54,6 +54,9 @@ Production defaults preserve the previous sender behavior:
 - Both cameras use `exposure_time: 500000.0` and `gain_value: 10.0`.
 - Each camera captures `CAP1` after `10` seconds and `CAP2` after `6` more
   seconds. The schedule is cumulative per camera and sorted across cameras.
+- Coil numbering is based on the IST date. It starts at `01` each new IST day
+  and continues after restarts using `~/coil_images/.coil_sequence_state.json`
+  plus a scan of the current day's saved BMP files.
 - Missing cameras do not stop the process; reconnects are attempted while the
   runtime continues.
 - Local BMP files are deleted only after a successful upload.
@@ -82,12 +85,14 @@ BMP images are written locally before upload:
 ```text
 ~/coil_images/
   YYYY-MM-DD/
-    COIL_YYYYMMDD_HHMMSS_COIL_N/
-      COIL_N_CAM1_CAP1_HHMMSS.bmp
-      COIL_N_CAM1_CAP2_HHMMSS.bmp
-      COIL_N_CAM2_CAP1_HHMMSS.bmp
-      COIL_N_CAM2_CAP2_HHMMSS.bmp
+    COIL_YYYYMMDD_HHMMSS_01/
+      cam_01_cap_01_coil_01.bmp
+      cam_01_cap_02_coil_01.bmp
+      cam_02_cap_01_coil_01.bmp
+      cam_02_cap_02_coil_01.bmp
 ```
+
+Image filenames follow `cam_XX_cap_YY_coil_ZZ.bmp`.
 
 Default temperature logging writes to:
 
