@@ -1,162 +1,154 @@
 # SBM Coil Image Capture and Receiver
 
-This project contains two Python scripts for capturing coil images on one Raspberry Pi and receiving them on another system over the local network.
+This repository contains a Raspberry Pi sender for Basler coil image capture and
+a small Flask receiver kept for compatibility. Sender code lives in
+`src/capture`; `capture_upload.py` is only a backward-compatible launcher.
 
-## Files
+## Project Layout
 
-| File | Purpose |
+| Path | Purpose |
 | --- | --- |
-| `capture_upload.py` | Runs on the camera/sensor Raspberry Pi. It waits for a GPIO signal, captures two Basler camera images per coil, queues them, uploads them to the receiver, and deletes local copies after a successful upload. |
-| `receiver.py` | Runs on the receiving Raspberry Pi or server. It exposes a Flask upload endpoint, saves each image, and writes matching metadata as JSON. |
+| `src/capture/` | Sender package: config, GPIO, camera capture, upload worker, and runtime loop. |
+| `capture_upload.py` | Compatibility launcher for existing deployments. |
+| `config/runtime.yaml` | Production runtime defaults. |
+| `config/runtime.example.yaml` | Documented config template. |
+| `receiver.py` | Existing receiver reference. The sender preserves its upload contract. |
+| `tests/` | Pure logic tests that do not require GPIO or Basler hardware. |
 
-## Workflow
+## Setup
 
-1. The photoelectric sensor is connected to GPIO `16`.
-2. `capture_upload.py` confirms the sensor is HIGH for `2` seconds.
-3. For each confirmed coil, the camera captures:
-   - `CAP1` after `10` seconds
-   - `CAP2` after `6` more seconds
-4. Images are saved temporarily under `~/coil_images/YYYY-MM-DD/COIL_N/`.
-5. Each image is uploaded to the receiver at `http://192.168.0.106:5000/upload`.
-6. `receiver.py` stores images under `received_images/YYYY-MM-DD/COIL_N/`.
-7. Metadata for each image is saved as a matching `.json` file.
-8. After upload succeeds, the sender deletes its local image copy.
-
-## Requirements
-
-### Sender Raspberry Pi
-
-- Python 3
-- Basler camera
-- Basler Pylon SDK / pypylon support
-- Photoelectric sensor connected to GPIO `16`
-- Network access to the receiver
-- Python packages:
-  - `requests`
-  - `gpiozero`
-  - `lgpio`
-  - `pypylon`
-
-Install packages:
+Use `uv`; `pyproject.toml` is the dependency source of truth.
 
 ```bash
 uv sync
 ```
 
-### Receiver Raspberry Pi / Server
-
-- Python 3
-- Network access from the sender Raspberry Pi
-- Python packages:
-  - `flask`
-  - `waitress`
-
-Install packages:
+Run the sender with the console entrypoint:
 
 ```bash
-uv sync
+uv run sbm-capture --config config/runtime.yaml
 ```
 
-If you prefer syncing directly from `requirements.txt`, run:
+The old command is still supported:
 
 ```bash
-uv pip sync requirements.txt
+uv run python capture_upload.py
 ```
+
+You can also set the config path with:
+
+```bash
+SBM_RUNTIME_CONFIG=/path/to/config/runtime.yaml uv run sbm-capture
+```
+
+## Runtime Behavior
+
+Production defaults preserve the previous sender behavior:
+
+- GPIO uses `gpiozero` with `lgpio`, pin `16`, `pull_up: false`, and
+  `bounce_time_seconds: 0.1`.
+- A coil is confirmed only after the signal stays HIGH for `2` seconds.
+- The sender waits for LOW for `5` seconds before arming for the next coil.
+- Two Basler cameras are configured by default:
+  `CAM1` uses `device_index: 0`; `CAM2` uses `device_index: 1`.
+- Both cameras use `exposure_time: 500000.0` and `gain_value: 10.0`.
+- Each camera captures `CAP1` after `10` seconds and `CAP2` after `6` more
+  seconds. The schedule is cumulative per camera and sorted across cameras.
+- Missing cameras do not stop the process; reconnects are attempted while the
+  runtime continues.
+- Local BMP files are deleted only after a successful upload.
+- Failed uploads are requeued and retried after the configured delay.
 
 ## Configuration
 
-Update these values in `capture_upload.py` if your hardware or network changes:
+Edit `config/runtime.yaml` for production:
 
-```python
-GPIO_PIN = 16
-EXPOSURE_TIME = 500000.0
-GAIN_VALUE = 10.0
-CAP1_DELAY = 10
-CAP2_DELAY = 6
-HIGH_CONFIRM_TIME = 2
-LOW_CONFIRM_TIME = 5
-PI2_UPLOAD_URL = "http://192.168.0.106:5000/upload"
-```
+| Section | Key Fields |
+| --- | --- |
+| `gpio` | Pin, pull mode, debounce, high confirmation, and low confirmation timings. |
+| `paths` | Sender image root and optional camera temperature log file. |
+| `upload` | Receiver URL, HTTP timeout, and retry delay. |
+| `camera_runtime` | Camera reconnect and temperature log intervals. |
+| `logging` | Console logging, rotating file logging, level, and noisy library suppression. |
+| `cameras` | Camera names, device indexes or serial numbers, exposure, gain, and captures. |
 
-In `receiver.py`, the server listens on all network interfaces at port `5000`:
+Paths support `~` expansion. Set `paths.camera_temperature_log_file` to `null`
+to disable camera temperature logging.
 
-```python
-serve(app, host="0.0.0.0", port=5000)
-```
+## Sender Output
 
-## How To Run
-
-Start the receiver first:
-
-```bash
-python receiver.py
-```
-
-The receiver should print that the server has started. You can also test it in a browser:
-
-```text
-http://<receiver-ip>:5000/
-```
-
-Then update `PI2_UPLOAD_URL` in `capture_upload.py` with the receiver IP address and start the sender:
-
-```bash
-python capture_upload.py
-```
-
-## Output Structure
-
-Receiver output:
-
-```text
-received_images/
-  YYYY-MM-DD/
-    COIL_1/
-      COIL_1_CAP1_HHMMSS.bmp
-      COIL_1_CAP1_HHMMSS.json
-      COIL_1_CAP2_HHMMSS.bmp
-      COIL_1_CAP2_HHMMSS.json
-```
-
-Sender temporary output:
+BMP images are written locally before upload:
 
 ```text
 ~/coil_images/
   YYYY-MM-DD/
-    COIL_1/
-      COIL_1_CAP1_HHMMSS.bmp
-      COIL_1_CAP2_HHMMSS.bmp
+    COIL_YYYYMMDD_HHMMSS_COIL_N/
+      COIL_N_CAM1_CAP1_HHMMSS.bmp
+      COIL_N_CAM1_CAP2_HHMMSS.bmp
+      COIL_N_CAM2_CAP1_HHMMSS.bmp
+      COIL_N_CAM2_CAP2_HHMMSS.bmp
 ```
 
-## Troubleshooting
+Default temperature logging writes to:
 
-- If the sender prints `NO CAMERA FOUND`, check the Basler camera connection, Pylon installation, and camera permissions.
-- If uploads fail, confirm the receiver is running and that `PI2_UPLOAD_URL` matches the receiver IP address.
-- If no coil is detected, verify the sensor wiring, GPIO pin number, and signal level.
-- Keep both systems on the same network unless port forwarding or routing is configured.
-
-## Git Upload
-
-Before pushing to GitHub, check the files:
-
-```bash
-git status
+```text
+~/coil_images/camera_temp.log
 ```
 
-Stage the project:
+## Receiver Upload Contract
 
-```bash
-git add -A
+The sender posts each BMP to the configured receiver URL with:
+
+- HTTP method: `POST`
+- multipart file field: `image`
+- file content type: `image/bmp`
+- form field: `metadata`
+- metadata value: JSON string
+- success condition: HTTP status `200`
+
+Metadata includes:
+
+```text
+coil_no
+coil_folder
+coil_started_at
+coil_date
+camera_name
+camera_device_index
+camera_serial_number
+capture_name
+delay_after_previous
+captured_at
+uploaded_at
 ```
 
-Commit the update:
+`uploaded_at` is added immediately before upload. `receiver.py` is not
+extended by the sender refactor.
+
+## Receiver
+
+Start the existing receiver separately:
 
 ```bash
-git commit -m "Add coil capture receiver project"
+uv run python receiver.py
 ```
 
-Push to the configured remote:
+It listens on `0.0.0.0:5000` and accepts uploads at `/upload`.
+
+## Production Migration Notes
+
+1. Back up the current production `config/runtime.yaml`.
+2. Run `uv sync` on the Raspberry Pi.
+3. Confirm the receiver is running and reachable from the sender.
+4. Verify Basler Pylon SDK installation, camera permissions, and USB/network
+   camera visibility.
+5. Verify GPIO wiring, pin `16`, and receiver URL in `config/runtime.yaml`.
+6. Start the sender with `uv run sbm-capture --config config/runtime.yaml`.
+
+## Development Checks
 
 ```bash
-git push origin main
+uv run python -m compileall src capture_upload.py receiver.py
+uv run pytest
+uv run ruff check .
 ```

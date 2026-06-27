@@ -1,0 +1,64 @@
+# Copy this file to config/runtime.yaml and edit it for the production Raspberry Pi.
+
+gpio:
+  # BCM GPIO pin connected to the coil/photoelectric signal.
+  pin: 16
+  # Current production wiring expects an external pull state.
+  pull_up: false
+  bounce_time_seconds: 0.1
+  # The input must remain HIGH this long before a coil is confirmed.
+  high_confirm_seconds: 2
+  # The input must remain LOW this long before the next coil can start.
+  low_confirm_seconds: 5
+
+paths:
+  # Local sender storage. Images are saved under:
+  # save_dir/YYYY-MM-DD/coil_folder/filename.bmp
+  save_dir: "~/coil_images"
+  # Set to null to disable camera temperature logging.
+  camera_temperature_log_file: "~/coil_images/camera_temp.log"
+
+upload:
+  # Receiver /upload endpoint. The sender posts multipart field "image"
+  # and form field "metadata".
+  url: "http://192.168.0.106:5000/upload"
+  timeout_seconds: 15
+  retry_delay_seconds: 2
+
+camera_runtime:
+  reconnect_interval_seconds: 5
+  # Temperature readings are written to camera_temperature_log_file.
+  temperature_log_interval_seconds: 1
+
+logging:
+  level: "INFO"
+  console: true
+  # Rotating file logging is enabled when this path is not null.
+  file: "~/coil_images/capture.log"
+  remove_spam_logs: true
+
+cameras:
+  - name: "CAM1"
+    # Used when serial_number is null.
+    device_index: 0
+    # Prefer serial_number for production systems where camera order can change.
+    serial_number: null
+    exposure_time: 500000.0
+    gain_value: 10.0
+    captures:
+      # Delays are cumulative per camera. CAP1 is at +10s.
+      - name: "CAP1"
+        delay_after_previous_seconds: 10
+      # CAP2 is 6 seconds after CAP1, so it captures at +16s.
+      - name: "CAP2"
+        delay_after_previous_seconds: 6
+  - name: "CAM2"
+    device_index: 1
+    serial_number: null
+    exposure_time: 500000.0
+    gain_value: 10.0
+    captures:
+      - name: "CAP1"
+        delay_after_previous_seconds: 10
+      - name: "CAP2"
+        delay_after_previous_seconds: 6
