@@ -1,10 +1,14 @@
-import logging
 import queue
 
-from capture.camera import BaslerCameraManager, read_camera_temperature
+from capture.camera import (
+    BaslerCameraManager,
+    format_temperature_reading,
+    read_camera_temperature,
+)
 from capture.models import (
     CameraConfig,
     CameraRuntimeConfig,
+    CameraTemperatureReading,
     GPIOConfig,
     LoggingConfig,
     PathsConfig,
@@ -57,7 +61,16 @@ def test_collect_temperature_readings_formats_detected_camera(tmp_path):
     )
     manager.cameras["CAM1"] = FakeCamera(37.26)
 
-    assert manager.collect_temperature_readings(should_reconnect=False) == [
+    readings = manager.collect_temperature_readings(should_reconnect=False)
+
+    assert readings == [
+        CameraTemperatureReading(
+            camera_name="CAM1",
+            temperature_c=37.3,
+            status="ok",
+        )
+    ]
+    assert [format_temperature_reading(reading) for reading in readings] == [
         "CAM1=37.3 C"
     ]
 
@@ -78,7 +91,11 @@ def test_collect_temperature_readings_reconnects_missing_camera(tmp_path):
     manager._open_camera = open_camera
 
     assert manager.collect_temperature_readings(should_reconnect=True) == [
-        "CAM1=41.0 C"
+        CameraTemperatureReading(
+            camera_name="CAM1",
+            temperature_c=41.0,
+            status="ok",
+        )
     ]
     assert opened_names == ["CAM1"]
     assert manager.cameras["CAM1"] is opened_camera
@@ -92,7 +109,11 @@ def test_collect_temperature_readings_marks_missing_without_reconnect(tmp_path):
     )
 
     assert manager.collect_temperature_readings(should_reconnect=False) == [
-        "CAM1=not detected"
+        CameraTemperatureReading(
+            camera_name="CAM1",
+            temperature_c=None,
+            status="not detected",
+        )
     ]
 
 
@@ -104,22 +125,56 @@ def test_collect_temperature_readings_reports_unavailable_value(tmp_path):
     )
     manager.cameras["CAM1"] = BrokenTemperatureCamera()
 
-    assert manager.collect_temperature_readings(should_reconnect=False) == [
+    readings = manager.collect_temperature_readings(should_reconnect=False)
+
+    assert readings == [
+        CameraTemperatureReading(
+            camera_name="CAM1",
+            temperature_c=None,
+            status="temperature unavailable",
+            error="sensor missing",
+        )
+    ]
+    assert [format_temperature_reading(reading) for reading in readings] == [
         "CAM1=temperature unavailable (sensor missing)"
     ]
 
 
 def test_runtime_records_temperature_readings_to_file_and_info_log(tmp_path, caplog):
     runtime = CaptureRuntime(runtime_config(tmp_path))
-    readings = ["CAM1=37.3 C", "CAM2=not detected"]
+    readings = [
+        CameraTemperatureReading(
+            camera_name="CAM1",
+            temperature_c=37.3,
+            status="ok",
+        ),
+        CameraTemperatureReading(
+            camera_name="CAM2",
+            temperature_c=None,
+            status="not detected",
+        ),
+    ]
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level("INFO"):
         runtime._record_temperature_readings(readings)
 
     log_text = (tmp_path / "camera_temp.log").read_text(encoding="utf-8")
+    queued_temperature = runtime.temperature_upload_queue.get_nowait()
 
     assert " | CAM1=37.3 C, CAM2=not detected\n" in log_text
     assert "Camera temperature: CAM1=37.3 C, CAM2=not detected" in caplog.text
+    assert queued_temperature.payload["readings"] == [
+        {
+            "camera_name": "CAM1",
+            "temperature_c": 37.3,
+            "status": "ok",
+        },
+        {
+            "camera_name": "CAM2",
+            "temperature_c": None,
+            "status": "not detected",
+        },
+    ]
 
 
 def runtime_config(tmp_path):
@@ -137,6 +192,11 @@ def runtime_config(tmp_path):
         ),
         upload=UploadConfig(
             url="http://receiver.example/upload",
+            timeout_seconds=15,
+            retry_delay_seconds=2,
+        ),
+        temperature_upload=UploadConfig(
+            url="http://receiver.example/temperature",
             timeout_seconds=15,
             retry_delay_seconds=2,
         ),

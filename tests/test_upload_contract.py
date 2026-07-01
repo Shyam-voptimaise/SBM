@@ -2,8 +2,13 @@ import json
 import queue
 from datetime import datetime
 
-from capture.models import QueuedUpload, UploadConfig
-from capture.uploader import process_upload_item, upload_file
+from capture.models import QueuedTemperatureUpload, QueuedUpload, UploadConfig
+from capture.uploader import (
+    process_temperature_upload_item,
+    process_upload_item,
+    upload_file,
+    upload_temperature_payload,
+)
 
 
 class Response:
@@ -15,6 +20,14 @@ def upload_config():
     return UploadConfig(
         url="http://receiver.example/upload",
         timeout_seconds=15,
+        retry_delay_seconds=2,
+    )
+
+
+def temperature_upload_config():
+    return UploadConfig(
+        url="http://receiver.example/temperature",
+        timeout_seconds=10,
         retry_delay_seconds=2,
     )
 
@@ -100,4 +113,75 @@ def test_process_upload_item_requeues_and_keeps_file_after_failure(tmp_path):
 
     assert ok is False
     assert image_path.exists()
+    assert retry_queue.get_nowait() == item
+
+
+def test_upload_temperature_payload_posts_json_and_adds_uploaded_at():
+    payload = {
+        "captured_at": "2026-01-02T03:04:05.123+05:30",
+        "readings": [
+            {
+                "camera_name": "CAM1",
+                "temperature_c": 58.0,
+                "status": "ok",
+            }
+        ],
+    }
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append(
+            {
+                "url": url,
+                "json": json,
+                "timeout": timeout,
+            }
+        )
+        return Response(200)
+
+    ok = upload_temperature_payload(
+        payload,
+        temperature_upload_config(),
+        post=fake_post,
+        now=lambda: datetime(2026, 1, 2, 3, 4, 6),
+    )
+
+    assert ok is True
+    assert calls == [
+        {
+            "url": "http://receiver.example/temperature",
+            "json": {
+                "captured_at": "2026-01-02T03:04:05.123+05:30",
+                "readings": [
+                    {
+                        "camera_name": "CAM1",
+                        "temperature_c": 58.0,
+                        "status": "ok",
+                    }
+                ],
+                "uploaded_at": "2026-01-02T03:04:06",
+            },
+            "timeout": 10,
+        }
+    ]
+
+
+def test_process_temperature_upload_item_requeues_after_failure():
+    retry_queue = queue.Queue()
+    item = QueuedTemperatureUpload(
+        {
+            "captured_at": "2026-01-02T03:04:05.123+05:30",
+            "readings": [],
+        }
+    )
+
+    ok = process_temperature_upload_item(
+        item,
+        retry_queue,
+        temperature_upload_config(),
+        post=lambda *_args, **_kwargs: Response(500),
+        sleep=lambda _seconds: None,
+    )
+
+    assert ok is False
     assert retry_queue.get_nowait() == item

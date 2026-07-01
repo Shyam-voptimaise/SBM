@@ -64,6 +64,8 @@ Production defaults preserve the previous sender behavior:
   runtime continues.
 - Camera temperatures use Basler `TemperatureAbs` readings and are logged every
   `10` seconds by default.
+- Camera temperature readings are also queued and uploaded as JSON to the
+  receiver's `/temperature` endpoint.
 - Local BMP files are deleted only after a successful upload.
 - Failed uploads are requeued and retried after the configured delay.
 
@@ -76,6 +78,7 @@ Edit `config/runtime.yaml` for production:
 | `gpio` | Pin, pull mode, debounce, high confirmation, and low confirmation timings. |
 | `paths` | Sender image root and optional camera temperature log file. |
 | `upload` | Receiver URL, HTTP timeout, and retry delay. |
+| `temperature_upload` | Receiver temperature URL, HTTP timeout, and retry delay. |
 | `camera_runtime` | Camera reconnect, temperature log, and profile check intervals. |
 | `logging` | Console logging, rotating file logging, level, and noisy library suppression. |
 | `cameras` | Camera names, device indexes or serial numbers, profiles, exposure/gain fallback, and captures. |
@@ -155,8 +158,43 @@ captured_at
 uploaded_at
 ```
 
-`uploaded_at` is added immediately before upload. `receiver.py` is not
-extended by the sender refactor.
+`uploaded_at` is added immediately before upload.
+
+## Receiver Temperature Contract
+
+The sender posts camera temperatures to the configured temperature URL with:
+
+- HTTP method: `POST`
+- content type: JSON
+- default endpoint: `/temperature`
+- success condition: HTTP status `200`
+
+Example payload:
+
+```json
+{
+  "captured_at": "2026-07-01T14:21:30.147+05:30",
+  "uploaded_at": "2026-07-01T14:21:31.000000",
+  "readings": [
+    {
+      "camera_name": "CAM1",
+      "temperature_c": 58.0,
+      "status": "ok"
+    },
+    {
+      "camera_name": "CAM2",
+      "temperature_c": null,
+      "status": "not detected"
+    }
+  ]
+}
+```
+
+The bundled receiver appends these payloads to:
+
+```text
+received_temperatures/YYYY-MM-DD/camera_temperature.jsonl
+```
 
 ## Receiver
 
@@ -166,7 +204,8 @@ Start the existing receiver separately:
 uv run python receiver.py
 ```
 
-It listens on `0.0.0.0:5000` and accepts uploads at `/upload`.
+It listens on `0.0.0.0:5000` and accepts images at `/upload` and temperature
+payloads at `/temperature`.
 
 ## Production Migration Notes
 

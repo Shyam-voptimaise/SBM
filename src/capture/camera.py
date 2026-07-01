@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from capture.capture import build_capture_metadata, build_image_filename
-from capture.models import CameraConfig, CameraProfile, CaptureConfig, QueuedUpload
+from capture.models import (
+    CameraConfig,
+    CameraProfile,
+    CameraTemperatureReading,
+    CaptureConfig,
+    QueuedUpload,
+)
 from capture.profiles import select_active_profile
 from capture.time_utils import ist_date, now_ist
 
@@ -16,6 +22,16 @@ LOGGER = logging.getLogger(__name__)
 def read_camera_temperature(camera) -> float:
     # Basler device temperature in Celsius on models that expose TemperatureAbs.
     return camera.TemperatureAbs.Value
+
+
+def format_temperature_reading(reading: CameraTemperatureReading) -> str:
+    if reading.temperature_c is not None:
+        return f"{reading.camera_name}={reading.temperature_c:.1f} C"
+
+    if reading.error:
+        return f"{reading.camera_name}={reading.status} ({reading.error})"
+
+    return f"{reading.camera_name}={reading.status}"
 
 
 class BaslerCameraManager:
@@ -108,7 +124,10 @@ class BaslerCameraManager:
                     self._close_camera(camera, camera_config.name)
                     self.cameras[camera_config.name] = self._open_camera(camera_config)
 
-    def collect_temperature_readings(self, should_reconnect: bool) -> List[str]:
+    def collect_temperature_readings(
+        self,
+        should_reconnect: bool,
+    ) -> List[CameraTemperatureReading]:
         readings = []
 
         with self.lock:
@@ -121,15 +140,32 @@ class BaslerCameraManager:
                     self.cameras[camera_name] = camera
 
                 if camera is None:
-                    readings.append(f"{camera_name}=not detected")
+                    readings.append(
+                        CameraTemperatureReading(
+                            camera_name=camera_name,
+                            temperature_c=None,
+                            status="not detected",
+                        )
+                    )
                     continue
 
                 try:
-                    temperature = read_camera_temperature(camera)
-                    readings.append(f"{camera_name}={temperature:.1f} C")
+                    temperature = round(read_camera_temperature(camera), 1)
+                    readings.append(
+                        CameraTemperatureReading(
+                            camera_name=camera_name,
+                            temperature_c=temperature,
+                            status="ok",
+                        )
+                    )
                 except Exception as exc:
                     readings.append(
-                        f"{camera_name}=temperature unavailable ({exc})"
+                        CameraTemperatureReading(
+                            camera_name=camera_name,
+                            temperature_c=None,
+                            status="temperature unavailable",
+                            error=str(exc),
+                        )
                     )
 
         return readings

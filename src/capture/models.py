@@ -70,6 +70,7 @@ class RuntimeConfig:
     gpio: GPIOConfig
     paths: PathsConfig
     upload: UploadConfig
+    temperature_upload: UploadConfig
     camera_runtime: CameraRuntimeConfig
     logging: LoggingConfig
     cameras: Tuple[CameraConfig, ...]
@@ -86,3 +87,16 @@ class ScheduledCapture:
 class QueuedUpload:
     file_path: Path
     metadata: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CameraTemperatureReading:
+    camera_name: str
+    temperature_c: Optional[float]
+    status: str
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class QueuedTemperatureUpload:
+    payload: Dict[str, Any]

@@ -2,18 +2,24 @@ import logging
 import queue
 import threading
 import time
+from datetime import datetime
 from typing import Optional, Sequence
 
-from capture.camera import BaslerCameraManager
+from capture.camera import BaslerCameraManager, format_temperature_reading
 from capture.capture import (
     build_capture_schedule,
     build_coil_folder_name,
 )
 from capture.gpio import create_trigger
-from capture.models import QueuedUpload, RuntimeConfig
+from capture.models import (
+    CameraTemperatureReading,
+    QueuedTemperatureUpload,
+    QueuedUpload,
+    RuntimeConfig,
+)
 from capture.sequence import CoilSequenceStore
 from capture.time_utils import now_ist
-from capture.uploader import uploader_worker
+from capture.uploader import temperature_uploader_worker, uploader_worker
 
 LOGGER = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 0.05
@@ -28,6 +34,9 @@ class CaptureRuntime:
         self.config = config
         self.logger = logger or LOGGER
         self.upload_queue: "queue.Queue[QueuedUpload]" = queue.Queue()
+        self.temperature_upload_queue: "queue.Queue[QueuedTemperatureUpload]" = (
+            queue.Queue()
+        )
         self.stop_event = threading.Event()
         self.sequence_store = CoilSequenceStore(
             self.config.paths.save_dir,
@@ -76,6 +85,20 @@ class CaptureRuntime:
         )
         upload_thread.start()
         self._threads.append(upload_thread)
+
+        temperature_upload_thread = threading.Thread(
+            target=temperature_uploader_worker,
+            args=(
+                self.temperature_upload_queue,
+                self.config.temperature_upload,
+                self.stop_event,
+                self.logger,
+            ),
+            daemon=True,
+            name="sbm-temperature-uploader",
+        )
+        temperature_upload_thread.start()
+        self._threads.append(temperature_upload_thread)
 
         temperature_thread = threading.Thread(
             target=self._temperature_worker,
@@ -126,18 +149,44 @@ class CaptureRuntime:
                 self.config.camera_runtime.temperature_log_interval_seconds
             )
 
-    def _record_temperature_readings(self, readings: Sequence[str]) -> None:
-        self._write_temperature_log(readings)
-        self.logger.info("Camera temperature: %s", ", ".join(readings))
+    def _record_temperature_readings(
+        self,
+        readings: Sequence[CameraTemperatureReading],
+    ) -> None:
+        captured_at = now_ist()
+        formatted_readings = [
+            format_temperature_reading(reading) for reading in readings
+        ]
 
-    def _write_temperature_log(self, readings: Sequence[str]) -> None:
+        self._write_temperature_log(formatted_readings, captured_at)
+        self._queue_temperature_upload(readings, captured_at)
+        self.logger.info("Camera temperature: %s", ", ".join(formatted_readings))
+
+    def _queue_temperature_upload(
+        self,
+        readings: Sequence[CameraTemperatureReading],
+        captured_at: datetime,
+    ) -> None:
+        payload = {
+            "captured_at": captured_at.isoformat(timespec="milliseconds"),
+            "readings": [
+                _temperature_reading_to_payload(reading) for reading in readings
+            ],
+        }
+        self.temperature_upload_queue.put(QueuedTemperatureUpload(payload))
+
+    def _write_temperature_log(
+        self,
+        readings: Sequence[str],
+        captured_at: datetime,
+    ) -> None:
         log_file = self.config.paths.camera_temperature_log_file
         if log_file is None:
             return
 
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            timestamp = now_ist().isoformat(timespec="seconds")
+            timestamp = captured_at.isoformat(timespec="seconds")
             line = f"{timestamp} | " + ", ".join(readings)
             with log_file.open("a", encoding="utf-8") as file:
                 file.write(line + "\n")
@@ -292,3 +341,16 @@ class CaptureRuntime:
             close()
         except Exception:
             self.logger.exception("failed to close GPIO trigger")
+
+
+def _temperature_reading_to_payload(reading: CameraTemperatureReading) -> dict:
+    payload = {
+        "camera_name": reading.camera_name,
+        "temperature_c": reading.temperature_c,
+        "status": reading.status,
+    }
+
+    if reading.error:
+        payload["error"] = reading.error
+
+    return payload

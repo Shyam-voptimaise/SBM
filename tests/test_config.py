@@ -19,6 +19,10 @@ upload:
   url: "http://192.168.0.106:5000/upload"
   timeout_seconds: 15
   retry_delay_seconds: 2
+temperature_upload:
+  url: "http://192.168.0.106:5000/temperature"
+  timeout_seconds: 10
+  retry_delay_seconds: 3
 camera_runtime:
   reconnect_interval_seconds: 5
   temperature_log_interval_seconds: 10
@@ -60,6 +64,9 @@ def test_load_config_expands_paths_and_loads_production_defaults(tmp_path):
     assert config.gpio.pin == 16
     assert config.gpio.pull_up is False
     assert config.upload.url == "http://192.168.0.106:5000/upload"
+    assert config.temperature_upload.url == "http://192.168.0.106:5000/temperature"
+    assert config.temperature_upload.timeout_seconds == 10
+    assert config.temperature_upload.retry_delay_seconds == 3
     assert config.paths.save_dir == Path("~/coil_images").expanduser()
     assert config.paths.camera_temperature_log_file == Path(
         "~/coil_images/camera_temp.log"
@@ -109,6 +116,29 @@ def test_load_config_parses_day_night_camera_profiles(tmp_path):
     ]
     assert profiles[1].exposure_time == 700000.0
     assert profiles[1].gain_value == 12.0
+
+
+def test_load_config_derives_temperature_upload_from_image_upload(tmp_path):
+    runtime_yaml = RUNTIME_YAML.replace(
+        (
+            "temperature_upload:\n"
+            "  url: \"http://192.168.0.106:5000/temperature\"\n"
+            "  timeout_seconds: 10\n"
+            "  retry_delay_seconds: 3\n"
+        ),
+        "",
+    )
+    config_path = tmp_path / "runtime.yaml"
+    config_path.write_text(runtime_yaml, encoding="utf-8")
+
+    config = load_config(str(config_path))
+
+    assert config.temperature_upload.url == "http://192.168.0.106:5000/temperature"
+    assert config.temperature_upload.timeout_seconds == config.upload.timeout_seconds
+    assert (
+        config.temperature_upload.retry_delay_seconds
+        == config.upload.retry_delay_seconds
+    )
 
 
 def test_environment_config_override(monkeypatch, tmp_path):

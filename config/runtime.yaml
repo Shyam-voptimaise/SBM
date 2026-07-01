@@ -14,6 +14,11 @@ upload:
   timeout_seconds: 120
   retry_delay_seconds: 2
 
+temperature_upload:
+  url: "http://192.168.0.106:5000/temperature"
+  timeout_seconds: 15
+  retry_delay_seconds: 2
+
 camera_runtime:
   reconnect_interval_seconds: 5
   temperature_log_interval_seconds: 10

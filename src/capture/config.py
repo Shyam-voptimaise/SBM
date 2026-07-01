@@ -61,6 +61,10 @@ def load_config(config_path: Optional[str] = None) -> RuntimeConfig:
     gpio = _load_gpio(_section(data, "gpio"))
     paths = _load_paths(_section(data, "paths"))
     upload = _load_upload(_section(data, "upload"))
+    temperature_upload = _load_temperature_upload(
+        _optional_section(data, "temperature_upload"),
+        upload,
+    )
     camera_runtime = _load_camera_runtime(_section(data, "camera_runtime"))
     logging_config = _load_logging(_section(data, "logging"))
     cameras = _load_cameras(_require_sequence(data.get("cameras"), "cameras"))
@@ -69,6 +73,7 @@ def load_config(config_path: Optional[str] = None) -> RuntimeConfig:
         gpio=gpio,
         paths=paths,
         upload=upload,
+        temperature_upload=temperature_upload,
         camera_runtime=camera_runtime,
         logging=logging_config,
         cameras=tuple(cameras),
@@ -104,15 +109,32 @@ def _load_paths(data: Mapping[str, Any]) -> PathsConfig:
     )
 
 
-def _load_upload(data: Mapping[str, Any]) -> UploadConfig:
+def _load_upload(data: Mapping[str, Any], section_name: str = "upload") -> UploadConfig:
     return UploadConfig(
-        url=_require_non_empty_string(data, "upload.url"),
-        timeout_seconds=_require_positive_number(data, "upload.timeout_seconds"),
+        url=_require_non_empty_string(data, f"{section_name}.url"),
+        timeout_seconds=_require_positive_number(
+            data,
+            f"{section_name}.timeout_seconds",
+        ),
         retry_delay_seconds=_require_non_negative_number(
             data,
-            "upload.retry_delay_seconds",
+            f"{section_name}.retry_delay_seconds",
         ),
     )
+
+
+def _load_temperature_upload(
+    data: Optional[Mapping[str, Any]],
+    upload: UploadConfig,
+) -> UploadConfig:
+    if data is None:
+        return UploadConfig(
+            url=_default_temperature_upload_url(upload.url),
+            timeout_seconds=upload.timeout_seconds,
+            retry_delay_seconds=upload.retry_delay_seconds,
+        )
+
+    return _load_upload(data, "temperature_upload")
 
 
 def _load_camera_runtime(data: Mapping[str, Any]) -> CameraRuntimeConfig:
@@ -269,6 +291,19 @@ def _section(data: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     if name not in data:
         raise ConfigError(f"missing required section: {name}")
     return _require_mapping(data[name], name)
+
+
+def _optional_section(data: Mapping[str, Any], name: str) -> Optional[Mapping[str, Any]]:
+    if name not in data or data[name] is None:
+        return None
+    return _require_mapping(data[name], name)
+
+
+def _default_temperature_upload_url(upload_url: str) -> str:
+    normalized_url = upload_url.rstrip("/")
+    if normalized_url.endswith("/upload"):
+        return f"{normalized_url[:-len('/upload')]}/temperature"
+    return f"{normalized_url}/temperature"
 
 
 def _require_mapping(value: Any, label: str) -> Mapping[str, Any]:

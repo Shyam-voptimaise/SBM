@@ -6,7 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from capture.models import QueuedUpload, UploadConfig
+from capture.models import QueuedTemperatureUpload, QueuedUpload, UploadConfig
+from capture.time_utils import now_ist
 
 LOGGER = logging.getLogger(__name__)
 
@@ -91,6 +92,71 @@ def process_upload_item(
     return False
 
 
+def upload_temperature_payload(
+    payload: Dict[str, Any],
+    config: UploadConfig,
+    post: Optional[Callable[..., Any]] = None,
+    now: Callable[[], datetime] = now_ist,
+    logger: Optional[logging.Logger] = None,
+) -> bool:
+    logger = logger or LOGGER
+
+    if post is None:
+        import requests
+
+        post = requests.post
+
+    upload_payload = dict(payload)
+    upload_payload["uploaded_at"] = now().isoformat()
+
+    try:
+        response = post(
+            config.url,
+            json=upload_payload,
+            timeout=config.timeout_seconds,
+        )
+
+        if response.status_code == 200:
+            logger.info("temperature upload succeeded")
+            return True
+
+        logger.warning(
+            "temperature upload failed with HTTP %s",
+            response.status_code,
+        )
+    except Exception:
+        logger.exception("temperature upload failed")
+
+    return False
+
+
+def process_temperature_upload_item(
+    item: QueuedTemperatureUpload,
+    upload_queue: "queue.Queue[QueuedTemperatureUpload]",
+    config: UploadConfig,
+    logger: Optional[logging.Logger] = None,
+    post: Optional[Callable[..., Any]] = None,
+    sleep: Callable[[float], None] = time.sleep,
+    retry: bool = True,
+) -> bool:
+    logger = logger or LOGGER
+
+    if upload_temperature_payload(
+        item.payload,
+        config,
+        post=post,
+        logger=logger,
+    ):
+        return True
+
+    if retry:
+        upload_queue.put(item)
+        logger.warning("temperature upload failed; requeued for retry")
+        sleep(config.retry_delay_seconds)
+
+    return False
+
+
 def uploader_worker(
     upload_queue: "queue.Queue[QueuedUpload]",
     config: UploadConfig,
@@ -111,3 +177,30 @@ def uploader_worker(
             upload_queue.task_done()
 
     logger.debug("uploader worker stopped")
+
+
+def temperature_uploader_worker(
+    upload_queue: "queue.Queue[QueuedTemperatureUpload]",
+    config: UploadConfig,
+    stop_event,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    logger = logger or LOGGER
+
+    while not stop_event.is_set():
+        try:
+            item = upload_queue.get(timeout=0.2)
+        except queue.Empty:
+            continue
+
+        try:
+            process_temperature_upload_item(
+                item,
+                upload_queue,
+                config,
+                logger=logger,
+            )
+        finally:
+            upload_queue.task_done()
+
+    logger.debug("temperature uploader worker stopped")

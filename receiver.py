@@ -9,9 +9,15 @@ from waitress import serve
 app = Flask(__name__)
 
 BASE_DIR = "received_images"
+TEMPERATURE_DIR = "received_temperatures"
 
 os.makedirs(
     BASE_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
+    TEMPERATURE_DIR,
     exist_ok=True
 )
 
@@ -83,7 +89,8 @@ def upload():
 
         with open(
             metadata_path,
-            "w"
+            "w",
+            encoding="utf-8"
         ) as f:
 
             json.dump(
@@ -93,11 +100,11 @@ def upload():
             )
 
         print(
-            f"✅ Image Saved : {image_path}"
+            f" Image Saved : {image_path}"
         )
 
         print(
-            f"✅ Metadata Saved : {metadata_path}"
+            f" Metadata Saved : {metadata_path}"
         )
 
         return jsonify(
@@ -106,7 +113,82 @@ def upload():
 
     except Exception as e:
 
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
+
+        return jsonify(
+            {"error": str(e)}
+        ), 500
+
+
+@app.route("/temperature", methods=["POST"])
+def temperature():
+
+    try:
+
+        payload = request.get_json(silent=True)
+
+        if not isinstance(payload, dict):
+            return jsonify(
+                {"error": "Invalid JSON payload"}
+            ), 400
+
+        readings = payload.get(
+            "readings"
+        )
+
+        if not isinstance(readings, list):
+            return jsonify(
+                {"error": "Missing readings list"}
+            ), 400
+
+        captured_at = payload.get(
+            "captured_at"
+        )
+
+        if isinstance(captured_at, str) and len(captured_at) >= 10:
+            date_folder = captured_at[:10]
+        else:
+            date_folder = datetime.now().strftime(
+                "%Y-%m-%d"
+            )
+
+        save_folder = os.path.join(
+            TEMPERATURE_DIR,
+            date_folder
+        )
+
+        os.makedirs(
+            save_folder,
+            exist_ok=True
+        )
+
+        temperature_path = os.path.join(
+            save_folder,
+            "camera_temperature.jsonl"
+        )
+
+        with open(
+            temperature_path,
+            "a",
+            encoding="utf-8"
+        ) as f:
+
+            f.write(
+                json.dumps(payload)
+                + "\n"
+            )
+
+        print(
+            f" Temperature Saved : {temperature_path}"
+        )
+
+        return jsonify(
+            {"status": "ok"}
+        ), 200
+
+    except Exception as e:
+
+        print(f" Temperature Error: {e}")
 
         return jsonify(
             {"error": str(e)}
@@ -116,7 +198,7 @@ def upload():
 if __name__ == "__main__":
 
     print(
-        "🚀 Receiver Server Started"
+        " Receiver Server Started"
     )
 
     serve(
