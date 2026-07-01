@@ -3,7 +3,7 @@ import queue
 import threading
 import time
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 
 from capture.camera import BaslerCameraManager, format_temperature_reading
 from capture.capture import (
@@ -50,6 +50,9 @@ class CaptureRuntime:
         )
         self._threads = []
         self._trigger = None
+        self._last_temperature_upload_signature: Optional[
+            Tuple[Tuple[str, Optional[float], str], ...]
+        ] = None
 
     def request_stop(self) -> None:
         self.stop_event.set()
@@ -159,14 +162,19 @@ class CaptureRuntime:
         ]
 
         self._write_temperature_log(formatted_readings, captured_at)
-        self._queue_temperature_upload(readings, captured_at)
+        self._queue_temperature_upload_if_changed(readings, captured_at)
         self.logger.info("Camera temperature: %s", ", ".join(formatted_readings))
 
-    def _queue_temperature_upload(
+    def _queue_temperature_upload_if_changed(
         self,
         readings: Sequence[CameraTemperatureReading],
         captured_at: datetime,
     ) -> None:
+        signature = _temperature_upload_signature(readings)
+        if signature == self._last_temperature_upload_signature:
+            self.logger.debug("camera temperature unchanged; upload skipped")
+            return
+
         payload = {
             "captured_at": captured_at.isoformat(timespec="milliseconds"),
             "readings": [
@@ -174,6 +182,7 @@ class CaptureRuntime:
             ],
         }
         self.temperature_upload_queue.put(QueuedTemperatureUpload(payload))
+        self._last_temperature_upload_signature = signature
 
     def _write_temperature_log(
         self,
@@ -354,3 +363,12 @@ def _temperature_reading_to_payload(reading: CameraTemperatureReading) -> dict:
         payload["error"] = reading.error
 
     return payload
+
+
+def _temperature_upload_signature(
+    readings: Sequence[CameraTemperatureReading],
+) -> Tuple[Tuple[str, Optional[float], str], ...]:
+    return tuple(
+        (reading.camera_name, reading.temperature_c, reading.status)
+        for reading in readings
+    )

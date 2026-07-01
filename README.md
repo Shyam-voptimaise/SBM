@@ -64,8 +64,9 @@ Production defaults preserve the previous sender behavior:
   runtime continues.
 - Camera temperatures use Basler `TemperatureAbs` readings and are logged every
   `10` seconds by default.
-- Camera temperature readings are also queued and uploaded as JSON to the
-  receiver's `/temperature` endpoint.
+- The first camera temperature snapshot after startup is uploaded as JSON to the
+  receiver's `/temperature` endpoint. Later snapshots are uploaded only when a
+  camera temperature or status changes.
 - Local BMP files are deleted only after a successful upload.
 - Failed uploads are requeued and retried after the configured delay.
 
@@ -162,7 +163,9 @@ uploaded_at
 
 ## Receiver Temperature Contract
 
-The sender posts camera temperatures to the configured temperature URL with:
+The sender posts camera temperatures to the configured temperature URL when the
+readings change. Temperature values are compared after rounding to one decimal
+place, so stable readings do not create repeated network uploads.
 
 - HTTP method: `POST`
 - content type: JSON

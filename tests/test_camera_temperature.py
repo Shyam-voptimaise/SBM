@@ -177,6 +177,46 @@ def test_runtime_records_temperature_readings_to_file_and_info_log(tmp_path, cap
     ]
 
 
+def test_runtime_uploads_temperature_only_when_readings_change(tmp_path):
+    runtime = CaptureRuntime(runtime_config(tmp_path))
+    readings = [
+        CameraTemperatureReading(
+            camera_name="CAM1",
+            temperature_c=37.3,
+            status="ok",
+        ),
+        CameraTemperatureReading(
+            camera_name="CAM2",
+            temperature_c=41.0,
+            status="ok",
+        ),
+    ]
+
+    runtime._record_temperature_readings(readings)
+    first_upload = runtime.temperature_upload_queue.get_nowait()
+
+    runtime._record_temperature_readings(readings)
+
+    changed_readings = [
+        CameraTemperatureReading(
+            camera_name="CAM1",
+            temperature_c=37.4,
+            status="ok",
+        ),
+        CameraTemperatureReading(
+            camera_name="CAM2",
+            temperature_c=41.0,
+            status="ok",
+        ),
+    ]
+    runtime._record_temperature_readings(changed_readings)
+    second_upload = runtime.temperature_upload_queue.get_nowait()
+
+    assert runtime.temperature_upload_queue.empty()
+    assert first_upload.payload["readings"][0]["temperature_c"] == 37.3
+    assert second_upload.payload["readings"][0]["temperature_c"] == 37.4
+
+
 def runtime_config(tmp_path):
     return RuntimeConfig(
         gpio=GPIOConfig(
