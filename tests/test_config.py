@@ -21,7 +21,7 @@ upload:
   retry_delay_seconds: 2
 camera_runtime:
   reconnect_interval_seconds: 5
-  temperature_log_interval_seconds: 1
+  temperature_log_interval_seconds: 10
 logging:
   level: "INFO"
   console: true
@@ -66,6 +66,49 @@ def test_load_config_expands_paths_and_loads_production_defaults(tmp_path):
     ).expanduser()
     assert [camera.name for camera in config.cameras] == ["CAM1", "CAM2"]
     assert config.cameras[0].captures[0].delay_after_previous_seconds == 10
+    assert config.camera_runtime.temperature_log_interval_seconds == 10
+    assert config.camera_runtime.profile_check_interval_seconds == 5.0
+    assert [profile.name for profile in config.cameras[0].profiles] == ["default"]
+
+
+def test_load_config_parses_day_night_camera_profiles(tmp_path):
+    runtime_yaml = RUNTIME_YAML.replace(
+        "temperature_log_interval_seconds: 10",
+        (
+            "temperature_log_interval_seconds: 10\n"
+            "  profile_check_interval_seconds: 3"
+        ),
+    ).replace(
+        "    captures:\n"
+        "      - name: \"CAP1\"\n"
+        "        delay_after_previous_seconds: 10",
+        "    profiles:\n"
+        "      - name: \"day\"\n"
+        "        exposure_time: 500000.0\n"
+        "        gain_value: 10.0\n"
+        "        start: \"06:00\"\n"
+        "      - name: \"night\"\n"
+        "        exposure_time: 700000.0\n"
+        "        gain_value: 12.0\n"
+        "        start: 18:00\n"
+        "    captures:\n"
+        "      - name: \"CAP1\"\n"
+        "        delay_after_previous_seconds: 10",
+        1,
+    )
+    config_path = tmp_path / "runtime.yaml"
+    config_path.write_text(runtime_yaml, encoding="utf-8")
+
+    config = load_config(str(config_path))
+    profiles = config.cameras[0].profiles
+
+    assert config.camera_runtime.profile_check_interval_seconds == 3
+    assert [(profile.name, profile.start_minutes) for profile in profiles] == [
+        ("day", 6 * 60),
+        ("night", 18 * 60),
+    ]
+    assert profiles[1].exposure_time == 700000.0
+    assert profiles[1].gain_value == 12.0
 
 
 def test_environment_config_override(monkeypatch, tmp_path):

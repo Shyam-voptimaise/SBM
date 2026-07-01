@@ -2,7 +2,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Optional
+from typing import Optional, Sequence
 
 from capture.camera import BaslerCameraManager
 from capture.capture import (
@@ -85,6 +85,25 @@ class CaptureRuntime:
         temperature_thread.start()
         self._threads.append(temperature_thread)
 
+        profile_thread = threading.Thread(
+            target=self._profile_worker,
+            daemon=True,
+            name="sbm-camera-profiles",
+        )
+        profile_thread.start()
+        self._threads.append(profile_thread)
+
+    def _profile_worker(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self.camera_manager.refresh_active_profiles()
+            except Exception:
+                self.logger.exception("camera profile refresh failed")
+
+            self.stop_event.wait(
+                self.config.camera_runtime.profile_check_interval_seconds
+            )
+
     def _temperature_worker(self) -> None:
         last_reconnect_attempt = time.monotonic()
 
@@ -101,14 +120,17 @@ class CaptureRuntime:
             if should_reconnect:
                 last_reconnect_attempt = now
 
-            self._write_temperature_log(readings)
-            self.logger.debug("camera temperature: %s", ", ".join(readings))
+            self._record_temperature_readings(readings)
 
             self.stop_event.wait(
                 self.config.camera_runtime.temperature_log_interval_seconds
             )
 
-    def _write_temperature_log(self, readings) -> None:
+    def _record_temperature_readings(self, readings: Sequence[str]) -> None:
+        self._write_temperature_log(readings)
+        self.logger.info("Camera temperature: %s", ", ".join(readings))
+
+    def _write_temperature_log(self, readings: Sequence[str]) -> None:
         log_file = self.config.paths.camera_temperature_log_file
         if log_file is None:
             return

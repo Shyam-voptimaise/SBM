@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -10,6 +10,14 @@ class CaptureConfig:
 
 
 @dataclass(frozen=True)
+class CameraProfile:
+    name: str
+    exposure_time: float
+    gain_value: float
+    start_minutes: int
+
+
+@dataclass(frozen=True)
 class CameraConfig:
     name: str
     device_index: int
@@ -17,6 +25,7 @@ class CameraConfig:
     exposure_time: float
     gain_value: float
     captures: Tuple[CaptureConfig, ...]
+    profiles: Tuple[CameraProfile, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -45,6 +54,7 @@ class UploadConfig:
 class CameraRuntimeConfig:
     reconnect_interval_seconds: float
     temperature_log_interval_seconds: float
+    profile_check_interval_seconds: float = 5.0
 
 
 @dataclass(frozen=True)

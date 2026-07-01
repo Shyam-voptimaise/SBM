@@ -4,7 +4,7 @@ import signal
 from typing import Optional, Sequence
 
 from capture.config import ConfigError, load_config
-from capture.logging_config import setup_logging
+from capture.logging_config import setup_fallback_logging, setup_logging
 from capture.runtime import CaptureRuntime
 
 
@@ -28,11 +28,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         config = load_config(args.config)
         setup_logging(config.logging)
     except ConfigError as exc:
-        logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
+        setup_fallback_logging()
         logging.getLogger(__name__).error("configuration error: %s", exc)
         return 2
     except ValueError as exc:
-        logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
+        setup_fallback_logging()
         logging.getLogger(__name__).error("configuration error: %s", exc)
         return 2
 

@@ -16,7 +16,8 @@ upload:
 
 camera_runtime:
   reconnect_interval_seconds: 5
-  temperature_log_interval_seconds: 1
+  temperature_log_interval_seconds: 10
+  profile_check_interval_seconds: 5
 
 logging:
   level: "INFO"
@@ -30,6 +31,15 @@ cameras:
     serial_number: null
     exposure_time: 500000.0
     gain_value: 10.0
+    profiles:
+      - name: "day"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "06:00"
+      - name: "night"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "18:00"
     captures:
       - name: "CAP1"
         delay_after_previous_seconds: 10
@@ -40,6 +50,15 @@ cameras:
     serial_number: null
     exposure_time: 500000.0
     gain_value: 10.0
+    profiles:
+      - name: "day"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "06:00"
+      - name: "night"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "18:00"
     captures:
       - name: "CAP1"
         delay_after_previous_seconds: 10

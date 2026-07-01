@@ -51,7 +51,10 @@ Production defaults preserve the previous sender behavior:
 - The sender waits for LOW for `5` seconds before arming for the next coil.
 - Two Basler cameras are configured by default:
   `CAM1` uses `device_index: 0`; `CAM2` uses `device_index: 1`.
-- Both cameras use `exposure_time: 500000.0` and `gain_value: 10.0`.
+- Both cameras use day/night profiles by default. The day profile starts at
+  `06:00` IST and the night profile starts at `18:00` IST.
+- Camera profile changes are checked in a background worker and also enforced
+  immediately before each capture, so a capture uses the active IST profile.
 - Each camera captures `CAP1` after `10` seconds and `CAP2` after `6` more
   seconds. The schedule is cumulative per camera and sorted across cameras.
 - Coil numbering is based on the IST date. It starts at `01` each new IST day
@@ -59,6 +62,8 @@ Production defaults preserve the previous sender behavior:
   plus a scan of the current day's saved BMP files.
 - Missing cameras do not stop the process; reconnects are attempted while the
   runtime continues.
+- Camera temperatures use Basler `TemperatureAbs` readings and are logged every
+  `10` seconds by default.
 - Local BMP files are deleted only after a successful upload.
 - Failed uploads are requeued and retried after the configured delay.
 
@@ -71,12 +76,29 @@ Edit `config/runtime.yaml` for production:
 | `gpio` | Pin, pull mode, debounce, high confirmation, and low confirmation timings. |
 | `paths` | Sender image root and optional camera temperature log file. |
 | `upload` | Receiver URL, HTTP timeout, and retry delay. |
-| `camera_runtime` | Camera reconnect and temperature log intervals. |
+| `camera_runtime` | Camera reconnect, temperature log, and profile check intervals. |
 | `logging` | Console logging, rotating file logging, level, and noisy library suppression. |
-| `cameras` | Camera names, device indexes or serial numbers, exposure, gain, and captures. |
+| `cameras` | Camera names, device indexes or serial numbers, profiles, exposure/gain fallback, and captures. |
 
 Paths support `~` expansion. Set `paths.camera_temperature_log_file` to `null`
 to disable camera temperature logging.
+
+Camera profiles are configured per camera:
+
+```yaml
+profiles:
+  - name: "day"
+    exposure_time: 500000.0
+    gain_value: 10.0
+    start: "06:00"
+  - name: "night"
+    exposure_time: 500000.0
+    gain_value: 10.0
+    start: "18:00"
+```
+
+The active profile is the latest profile whose `start` time has passed in IST.
+For example, `night` remains active after midnight until `day` starts again.
 
 ## Sender Output
 
@@ -98,6 +120,12 @@ Default temperature logging writes to:
 
 ```text
 ~/coil_images/camera_temp.log
+```
+
+Application logs are written in a parseable production format:
+
+```text
+2026-01-02T03:04:05.123+05:30 | INFO | capture.runtime | pid=1234 | sbm-camera-temperature | runtime.py:131 | Camera temperature: CAM1=37.3 C
 ```
 
 ## Receiver Upload Contract

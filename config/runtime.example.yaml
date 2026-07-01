@@ -28,7 +28,9 @@ upload:
 camera_runtime:
   reconnect_interval_seconds: 5
   # Temperature readings are written to camera_temperature_log_file.
-  temperature_log_interval_seconds: 1
+  temperature_log_interval_seconds: 10
+  # Active camera profiles are checked and applied in a background worker.
+  profile_check_interval_seconds: 5
 
 logging:
   level: "INFO"
@@ -43,8 +45,20 @@ cameras:
     device_index: 0
     # Prefer serial_number for production systems where camera order can change.
     serial_number: null
+    # Fallback exposure/gain if profiles are removed.
     exposure_time: 500000.0
     gain_value: 10.0
+    profiles:
+      # Active from 06:00 IST until the night profile starts.
+      - name: "day"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "06:00"
+      # Active from 18:00 IST until the next day's day profile starts.
+      - name: "night"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "18:00"
     captures:
       # Delays are cumulative per camera. CAP1 is at +10s.
       - name: "CAP1"
@@ -55,8 +69,18 @@ cameras:
   - name: "CAM2"
     device_index: 1
     serial_number: null
+    # Fallback exposure/gain if profiles are removed.
     exposure_time: 500000.0
     gain_value: 10.0
+    profiles:
+      - name: "day"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "06:00"
+      - name: "night"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "18:00"
     captures:
       - name: "CAP1"
         delay_after_previous_seconds: 10

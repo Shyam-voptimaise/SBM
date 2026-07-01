@@ -6,10 +6,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from capture.capture import build_capture_metadata, build_image_filename
-from capture.models import CameraConfig, CaptureConfig, QueuedUpload
+from capture.models import CameraConfig, CameraProfile, CaptureConfig, QueuedUpload
+from capture.profiles import select_active_profile
 from capture.time_utils import ist_date, now_ist
 
 LOGGER = logging.getLogger(__name__)
+
+
+def read_camera_temperature(camera) -> float:
+    # Basler device temperature in Celsius on models that expose TemperatureAbs.
+    return camera.TemperatureAbs.Value
 
 
 class BaslerCameraManager:
@@ -28,6 +34,7 @@ class BaslerCameraManager:
         self.cameras: Dict[str, object] = {
             camera.name: None for camera in self.camera_configs
         }
+        self.active_profile_names: Dict[str, str] = {}
 
     def open_configured_cameras(self) -> None:
         with self.lock:
@@ -63,6 +70,18 @@ class BaslerCameraManager:
                 )
                 return False
 
+            if not self._ensure_active_profile(camera, camera_config):
+                self._close_camera(camera, camera_config.name)
+                camera = self._open_camera(camera_config)
+                self.cameras[camera_config.name] = camera
+                if camera is None:
+                    self.logger.warning(
+                        "%s %s: skipped because profile apply failed",
+                        camera_config.name,
+                        capture_config.name,
+                    )
+                    return False
+
             success = self._capture_image(
                 camera,
                 coil_no,
@@ -77,6 +96,17 @@ class BaslerCameraManager:
                 self.cameras[camera_config.name] = self._open_camera(camera_config)
 
             return success
+
+    def refresh_active_profiles(self) -> None:
+        with self.lock:
+            for camera_config in self.camera_configs:
+                camera = self.cameras.get(camera_config.name)
+                if camera is None:
+                    continue
+
+                if not self._ensure_active_profile(camera, camera_config):
+                    self._close_camera(camera, camera_config.name)
+                    self.cameras[camera_config.name] = self._open_camera(camera_config)
 
     def collect_temperature_readings(self, should_reconnect: bool) -> List[str]:
         readings = []
@@ -95,7 +125,7 @@ class BaslerCameraManager:
                     continue
 
                 try:
-                    temperature = camera.TemperatureAbs.Value
+                    temperature = read_camera_temperature(camera)
                     readings.append(f"{camera_name}={temperature:.1f} C")
                 except Exception as exc:
                     readings.append(
@@ -132,7 +162,8 @@ class BaslerCameraManager:
         camera = pylon.InstantCamera(factory.CreateDevice(device))
 
         try:
-            self._configure_camera(camera, camera_config, pylon)
+            profile = select_active_profile(camera_config.profiles, now_ist())
+            self._configure_camera(camera, camera_config, profile, pylon)
         except Exception as exc:
             self.logger.error(
                 "%s: camera open/config error: %s",
@@ -143,38 +174,80 @@ class BaslerCameraManager:
             return None
 
         self.logger.info(
-            "%s: camera connected (%s)",
+            "%s: camera connected (%s), profile=%s",
             camera_config.name,
             self._get_device_label(device),
+            profile.name,
         )
         return camera
 
-    def _configure_camera(self, camera, camera_config: CameraConfig, pylon) -> None:
+    def _configure_camera(
+        self,
+        camera,
+        camera_config: CameraConfig,
+        profile: CameraProfile,
+        pylon,
+    ) -> None:
         camera.Open()
         camera.AcquisitionMode.SetValue("Continuous")
 
-        camera.ExposureAuto.SetValue("Off")
-        try:
-            camera.ExposureTime.SetValue(camera_config.exposure_time)
-        except Exception:
-            camera.ExposureTimeAbs.SetValue(camera_config.exposure_time)
-
-        try:
-            camera.GainAuto.SetValue("Off")
-            camera.Gain.SetValue(camera_config.gain_value)
-        except Exception:
-            try:
-                camera.GainRaw.SetValue(int(camera_config.gain_value))
-            except Exception:
-                self.logger.debug(
-                    "%s: gain setting not supported",
-                    camera_config.name,
-                )
+        self._apply_profile_settings(camera, camera_config, profile)
 
         camera.TriggerMode.SetValue("On")
         camera.TriggerSource.SetValue("Software")
         camera.TriggerSelector.SetValue("FrameStart")
         camera.StartGrabbing(pylon.GrabStrategy_OneByOne)
+        self.active_profile_names[camera_config.name] = profile.name
+
+    def _ensure_active_profile(self, camera, camera_config: CameraConfig) -> bool:
+        profile = select_active_profile(camera_config.profiles, now_ist())
+        if self.active_profile_names.get(camera_config.name) == profile.name:
+            return True
+
+        try:
+            self._apply_profile_settings(camera, camera_config, profile)
+        except Exception:
+            self.logger.exception(
+                "%s: failed to apply camera profile %s",
+                camera_config.name,
+                profile.name,
+            )
+            self.active_profile_names.pop(camera_config.name, None)
+            return False
+
+        self.active_profile_names[camera_config.name] = profile.name
+        self.logger.info(
+            "%s: applied camera profile %s (exposure=%s, gain=%s)",
+            camera_config.name,
+            profile.name,
+            profile.exposure_time,
+            profile.gain_value,
+        )
+        return True
+
+    def _apply_profile_settings(
+        self,
+        camera,
+        camera_config: CameraConfig,
+        profile: CameraProfile,
+    ) -> None:
+        camera.ExposureAuto.SetValue("Off")
+        try:
+            camera.ExposureTime.SetValue(profile.exposure_time)
+        except Exception:
+            camera.ExposureTimeAbs.SetValue(profile.exposure_time)
+
+        try:
+            camera.GainAuto.SetValue("Off")
+            camera.Gain.SetValue(profile.gain_value)
+        except Exception:
+            try:
+                camera.GainRaw.SetValue(int(profile.gain_value))
+            except Exception:
+                self.logger.debug(
+                    "%s: gain setting not supported",
+                    camera_config.name,
+                )
 
     def _find_camera_device(self, devices, camera_config: CameraConfig):
         if camera_config.serial_number:
@@ -297,6 +370,8 @@ class BaslerCameraManager:
                 self.logger.info("%s: camera disconnected", camera_name)
         except Exception:
             pass
+        finally:
+            self.active_profile_names.pop(camera_name, None)
 
     def _get_device_label(self, device) -> str:
         details = []

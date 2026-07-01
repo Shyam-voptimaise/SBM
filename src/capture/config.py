@@ -1,9 +1,11 @@
 import os
+from datetime import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from capture.models import (
     CameraConfig,
+    CameraProfile,
     CameraRuntimeConfig,
     CaptureConfig,
     GPIOConfig,
@@ -123,6 +125,11 @@ def _load_camera_runtime(data: Mapping[str, Any]) -> CameraRuntimeConfig:
             data,
             "camera_runtime.temperature_log_interval_seconds",
         ),
+        profile_check_interval_seconds=_optional_positive_number(
+            data,
+            "camera_runtime.profile_check_interval_seconds",
+            default=5.0,
+        ),
     )
 
 
@@ -152,20 +159,80 @@ def _load_cameras(cameras: Sequence[Any]) -> Sequence[CameraConfig]:
         if serial_number is not None and not isinstance(serial_number, str):
             raise ConfigError(f"{label}.serial_number must be a string or null")
 
+        profiles = _load_profiles(camera.get("profiles"), label)
+        exposure_time = _optional_positive_number(camera, f"{label}.exposure_time")
+        gain_value = _optional_non_negative_number(camera, f"{label}.gain_value")
+
+        if profiles:
+            exposure_time = (
+                exposure_time
+                if exposure_time is not None
+                else profiles[0].exposure_time
+            )
+            gain_value = gain_value if gain_value is not None else profiles[0].gain_value
+        else:
+            exposure_time = _require_positive_number(camera, f"{label}.exposure_time")
+            gain_value = _require_non_negative_number(camera, f"{label}.gain_value")
+            profiles = (
+                CameraProfile(
+                    name="default",
+                    exposure_time=exposure_time,
+                    gain_value=gain_value,
+                    start_minutes=0,
+                ),
+            )
+
         loaded.append(
             CameraConfig(
                 name=_require_non_empty_string(camera, f"{label}.name"),
                 device_index=_require_int(camera, f"{label}.device_index"),
                 serial_number=serial_number,
+                exposure_time=exposure_time,
+                gain_value=gain_value,
+                captures=tuple(captures),
+                profiles=tuple(profiles),
+            )
+        )
+
+    return loaded
+
+
+def _load_profiles(raw_profiles: Any, camera_label: str) -> Sequence[CameraProfile]:
+    if raw_profiles is None:
+        return ()
+
+    profiles = _require_sequence(raw_profiles, f"{camera_label}.profiles")
+    if not profiles:
+        raise ConfigError(f"{camera_label}.profiles must contain at least one profile")
+
+    loaded = []
+    seen_names = set()
+
+    for index, raw_profile in enumerate(profiles):
+        label = f"{camera_label}.profiles[{index}]"
+        profile = _require_mapping(raw_profile, label)
+        name = _require_non_empty_string(profile, f"{label}.name")
+        normalized_name = name.lower()
+
+        if normalized_name in seen_names:
+            raise ConfigError(f"{label}.name must be unique per camera")
+        seen_names.add(normalized_name)
+
+        loaded.append(
+            CameraProfile(
+                name=name,
                 exposure_time=_require_positive_number(
-                    camera,
+                    profile,
                     f"{label}.exposure_time",
                 ),
                 gain_value=_require_non_negative_number(
-                    camera,
+                    profile,
                     f"{label}.gain_value",
                 ),
-                captures=tuple(captures),
+                start_minutes=_parse_start_minutes(
+                    _lookup(profile, f"{label}.start"),
+                    f"{label}.start",
+                ),
             )
         )
 
@@ -255,12 +322,40 @@ def _require_positive_number(
     return value
 
 
+def _optional_positive_number(
+    data: Mapping[str, Any],
+    label: str,
+    default: Optional[float] = None,
+    key: Optional[str] = None,
+) -> Optional[float]:
+    value = _optional_number(data, label, key)
+    if value is None:
+        return default
+    if value <= 0:
+        raise ConfigError(f"{label} must be greater than 0")
+    return value
+
+
 def _require_non_negative_number(
     data: Mapping[str, Any],
     label: str,
     key: Optional[str] = None,
 ) -> float:
     value = _require_number(data, label, key)
+    if value < 0:
+        raise ConfigError(f"{label} must be greater than or equal to 0")
+    return value
+
+
+def _optional_non_negative_number(
+    data: Mapping[str, Any],
+    label: str,
+    default: Optional[float] = None,
+    key: Optional[str] = None,
+) -> Optional[float]:
+    value = _optional_number(data, label, key)
+    if value is None:
+        return default
     if value < 0:
         raise ConfigError(f"{label} must be greater than or equal to 0")
     return value
@@ -275,6 +370,48 @@ def _require_number(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{label} must be a number")
     return value
+
+
+def _optional_number(
+    data: Mapping[str, Any],
+    label: str,
+    key: Optional[str] = None,
+) -> Optional[float]:
+    field_name = key or label.rsplit(".", 1)[-1]
+    if field_name not in data:
+        return None
+    value = data[field_name]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{label} must be a number")
+    return value
+
+
+def _parse_start_minutes(value: Any, label: str) -> int:
+    if isinstance(value, time):
+        hour = value.hour
+        minute = value.minute
+    elif isinstance(value, int) and not isinstance(value, bool):
+        if value < 0 or value >= 24 * 60:
+            raise ConfigError(f"{label} must be a valid 24-hour HH:MM time")
+        return value
+    elif isinstance(value, str):
+        parts = value.strip().split(":")
+        if len(parts) != 2:
+            raise ConfigError(f"{label} must be in HH:MM format")
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError as exc:
+            raise ConfigError(f"{label} must be in HH:MM format") from exc
+    else:
+        raise ConfigError(f"{label} must be in HH:MM format")
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ConfigError(f"{label} must be a valid 24-hour HH:MM time")
+
+    return hour * 60 + minute
 
 
 def _require_path(data: Mapping[str, Any], label: str) -> Path:
