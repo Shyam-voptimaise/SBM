@@ -35,7 +35,8 @@ camera_runtime:
   reconnect_interval_seconds: 5
   # Temperature readings are written to camera_temperature_log_file.
   temperature_log_interval_seconds: 10
-  # Active camera profiles are checked and applied in a background worker.
+  # Retry delay if a scheduled profile apply fails. Normal profile changes are
+  # applied by sleeping until the next configured profile start time.
   profile_check_interval_seconds: 5
 
 logging:

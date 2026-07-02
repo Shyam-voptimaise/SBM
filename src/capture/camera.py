@@ -13,8 +13,8 @@ from capture.models import (
     CaptureConfig,
     QueuedUpload,
 )
-from capture.profiles import select_active_profile
-from capture.time_utils import ist_date, now_ist
+from capture.profiles import next_profile_change_at, select_active_profile
+from capture.time_utils import ist_date, now_ist, to_ist
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,18 +86,6 @@ class BaslerCameraManager:
                 )
                 return False
 
-            if not self._ensure_active_profile(camera, camera_config):
-                self._close_camera(camera, camera_config.name)
-                camera = self._open_camera(camera_config)
-                self.cameras[camera_config.name] = camera
-                if camera is None:
-                    self.logger.warning(
-                        "%s %s: skipped because profile apply failed",
-                        camera_config.name,
-                        capture_config.name,
-                    )
-                    return False
-
             success = self._capture_image(
                 camera,
                 coil_no,
@@ -123,6 +111,20 @@ class BaslerCameraManager:
                 if not self._ensure_active_profile(camera, camera_config):
                     self._close_camera(camera, camera_config.name)
                     self.cameras[camera_config.name] = self._open_camera(camera_config)
+
+    def seconds_until_next_profile_change(self) -> Optional[float]:
+        now = now_ist()
+        next_changes = []
+        for camera_config in self.camera_configs:
+            change_at = next_profile_change_at(camera_config.profiles, now)
+            if change_at is not None:
+                next_changes.append(change_at)
+
+        if not next_changes:
+            return None
+
+        next_change = min(next_changes)
+        return max((next_change - to_ist(now)).total_seconds(), 0.0)
 
     def collect_temperature_readings(
         self,

@@ -46,6 +46,23 @@ def test_sequence_resets_for_new_ist_day(tmp_path):
     assert next_day_store.next_coil_number() == "01"
 
 
+def test_sequence_refreshes_date_only_when_requested(tmp_path):
+    current = datetime(2026, 1, 2, 23, 59, 0, tzinfo=IST)
+
+    def now():
+        return current
+
+    store = CoilSequenceStore(tmp_path, now=now)
+
+    assert store.next_coil_number() == "01"
+
+    current = datetime(2026, 1, 3, 0, 0, 1, tzinfo=IST)
+    assert store.next_coil_number() == "02"
+
+    store.refresh_current_date()
+    assert store.next_coil_number() == "01"
+
+
 def test_sequence_recovers_from_latest_saved_file_when_state_missing(tmp_path):
     saved = tmp_path / "2026-01-02" / "COIL_20260102_030405_07"
     saved.mkdir(parents=True)

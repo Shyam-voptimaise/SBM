@@ -18,11 +18,13 @@ from capture.models import (
     RuntimeConfig,
 )
 from capture.sequence import CoilSequenceStore
-from capture.time_utils import now_ist
+from capture.time_utils import now_ist, seconds_until_next_ist_midnight
 from capture.uploader import temperature_uploader_worker, uploader_worker
 
 LOGGER = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 0.05
+PROFILE_IDLE_WAIT_SECONDS = 24 * 60 * 60
+MIN_SCHEDULED_WAIT_SECONDS = 0.1
 
 
 class CaptureRuntime:
@@ -119,16 +121,48 @@ class CaptureRuntime:
         profile_thread.start()
         self._threads.append(profile_thread)
 
+        sequence_thread = threading.Thread(
+            target=self._coil_sequence_date_worker,
+            daemon=True,
+            name="sbm-coil-sequence-date",
+        )
+        sequence_thread.start()
+        self._threads.append(sequence_thread)
+
     def _profile_worker(self) -> None:
         while not self.stop_event.is_set():
+            wait_seconds = self.config.camera_runtime.profile_check_interval_seconds
+
             try:
                 self.camera_manager.refresh_active_profiles()
+                wait_seconds = (
+                    self.camera_manager.seconds_until_next_profile_change()
+                )
+                if wait_seconds is None:
+                    wait_seconds = PROFILE_IDLE_WAIT_SECONDS
             except Exception:
                 self.logger.exception("camera profile refresh failed")
 
             self.stop_event.wait(
-                self.config.camera_runtime.profile_check_interval_seconds
+                max(wait_seconds, MIN_SCHEDULED_WAIT_SECONDS)
             )
+
+    def _coil_sequence_date_worker(self) -> None:
+        while not self.stop_event.is_set():
+            wait_seconds = seconds_until_next_ist_midnight(now_ist())
+
+            if self.stop_event.wait(
+                max(wait_seconds, MIN_SCHEDULED_WAIT_SECONDS)
+            ):
+                return
+
+            try:
+                self.sequence_store.refresh_current_date()
+            except Exception:
+                self.logger.exception("coil sequence date refresh failed")
+                self.stop_event.wait(
+                    self.config.camera_runtime.profile_check_interval_seconds
+                )
 
     def _temperature_worker(self) -> None:
         last_reconnect_attempt = time.monotonic()

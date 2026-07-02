@@ -39,14 +39,24 @@ class CoilSequenceStore:
 
     def next_coil_number(self) -> str:
         with self._lock:
-            current_date = self._current_date()
-            if current_date != self._state_date:
-                self._state_date = current_date
-                self._last_coil_number = self._scan_latest_coil_number(current_date)
-
             self._last_coil_number += 1
             self._write_state()
             return format_coil_number(self._last_coil_number)
+
+    def refresh_current_date(self) -> None:
+        with self._lock:
+            current_date = self._current_date()
+            if current_date == self._state_date:
+                return
+
+            self._state_date = current_date
+            self._last_coil_number = self._scan_latest_coil_number(current_date)
+            self._write_state()
+            self.logger.info(
+                "coil sequence date refreshed for %s; latest saved coil=%s",
+                current_date,
+                format_coil_number(self._last_coil_number),
+            )
 
     def _load_or_recover(self) -> None:
         current_date = self._current_date()

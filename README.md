@@ -53,13 +53,16 @@ Production defaults preserve the previous sender behavior:
   `CAM1` uses `device_index: 0`; `CAM2` uses `device_index: 1`.
 - Both cameras use day/night profiles by default. The day profile starts at
   `06:00` IST and the night profile starts at `18:00` IST.
-- Camera profile changes are checked in a background worker and also enforced
-  immediately before each capture, so a capture uses the active IST profile.
+- Camera profile changes are scheduled in a background worker. The worker
+  applies the active IST profile, then sleeps until the next configured profile
+  start time instead of checking before every capture.
 - Each camera captures `CAP1` after `10` seconds and `CAP2` after `6` more
   seconds. The schedule is cumulative per camera and sorted across cameras.
-- Coil numbering is based on the IST date. It starts at `01` each new IST day
-  and continues after restarts using `~/coil_images/.coil_sequence_state.json`
-  plus a scan of the current day's saved BMP files.
+- Coil numbering is based on the IST date. The sequence is loaded once at
+  startup and refreshed by a background worker at the next IST midnight. It
+  starts at `01` each new IST day and continues after restarts using
+  `~/coil_images/.coil_sequence_state.json` plus a scan of the current day's
+  saved BMP files.
 - Missing cameras do not stop the process; reconnects are attempted while the
   runtime continues.
 - Camera temperatures use Basler `TemperatureAbs` readings and are logged every
@@ -80,7 +83,7 @@ Edit `config/runtime.yaml` for production:
 | `paths` | Sender image root and optional camera temperature log file. |
 | `upload` | Receiver URL, HTTP timeout, and retry delay. |
 | `temperature_upload` | Receiver temperature URL, HTTP timeout, and retry delay. |
-| `camera_runtime` | Camera reconnect, temperature log, and profile check intervals. |
+| `camera_runtime` | Camera reconnect, temperature log, and profile retry intervals. |
 | `logging` | Console logging, rotating file logging, level, and noisy library suppression. |
 | `cameras` | Camera names, device indexes or serial numbers, profiles, exposure/gain fallback, and captures. |
 
