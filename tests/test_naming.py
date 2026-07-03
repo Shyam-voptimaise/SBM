@@ -30,8 +30,6 @@ def test_capture_metadata_preserves_required_fields():
         name="CAM1",
         device_index=0,
         serial_number=None,
-        exposure_time=500000.0,
-        gain_value=10.0,
         captures=(),
     )
     capture = CaptureConfig(name="CAP1", delay_after_previous_seconds=10)

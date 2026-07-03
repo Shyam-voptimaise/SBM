@@ -34,8 +34,6 @@ cameras:
   - name: "CAM1"
     device_index: 0
     serial_number: null
-    exposure_time: 500000.0
-    gain_value: 10.0
     profiles:
       - name: "day"
         exposure_time: 500000.0
@@ -53,8 +51,6 @@ cameras:
   - name: "CAM2"
     device_index: 1
     serial_number: null
-    exposure_time: 500000.0
-    gain_value: 10.0
     profiles:
       - name: "day"
         exposure_time: 500000.0

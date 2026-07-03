@@ -35,8 +35,15 @@ cameras:
   - name: "CAM1"
     device_index: 0
     serial_number: null
-    exposure_time: 500000.0
-    gain_value: 10.0
+    profiles:
+      - name: "day"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "06:00"
+      - name: "night"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "18:00"
     captures:
       - name: "CAP1"
         delay_after_previous_seconds: 10
@@ -45,8 +52,15 @@ cameras:
   - name: "CAM2"
     device_index: 1
     serial_number: null
-    exposure_time: 500000.0
-    gain_value: 10.0
+    profiles:
+      - name: "day"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "06:00"
+      - name: "night"
+        exposure_time: 500000.0
+        gain_value: 10.0
+        start: "18:00"
     captures:
       - name: "CAP1"
         delay_after_previous_seconds: 10
@@ -75,7 +89,10 @@ def test_load_config_expands_paths_and_loads_production_defaults(tmp_path):
     assert config.cameras[0].captures[0].delay_after_previous_seconds == 10
     assert config.camera_runtime.temperature_log_interval_seconds == 10
     assert config.camera_runtime.profile_check_interval_seconds == 5.0
-    assert [profile.name for profile in config.cameras[0].profiles] == ["default"]
+    assert [profile.name for profile in config.cameras[0].profiles] == [
+        "day",
+        "night",
+    ]
 
 
 def test_load_config_parses_day_night_camera_profiles(tmp_path):
@@ -86,21 +103,14 @@ def test_load_config_parses_day_night_camera_profiles(tmp_path):
             "  profile_check_interval_seconds: 3"
         ),
     ).replace(
-        "    captures:\n"
-        "      - name: \"CAP1\"\n"
-        "        delay_after_previous_seconds: 10",
-        "    profiles:\n"
-        "      - name: \"day\"\n"
+        "      - name: \"night\"\n"
         "        exposure_time: 500000.0\n"
         "        gain_value: 10.0\n"
-        "        start: \"06:00\"\n"
+        "        start: \"18:00\"",
         "      - name: \"night\"\n"
         "        exposure_time: 700000.0\n"
         "        gain_value: 12.0\n"
-        "        start: 18:00\n"
-        "    captures:\n"
-        "      - name: \"CAP1\"\n"
-        "        delay_after_previous_seconds: 10",
+        "        start: 18:00",
         1,
     )
     config_path = tmp_path / "runtime.yaml"
@@ -139,6 +149,32 @@ def test_load_config_derives_temperature_upload_from_image_upload(tmp_path):
         config.temperature_upload.retry_delay_seconds
         == config.upload.retry_delay_seconds
     )
+
+
+def test_load_config_requires_camera_profiles(tmp_path):
+    runtime_yaml = RUNTIME_YAML.replace(
+        (
+            "    profiles:\n"
+            "      - name: \"day\"\n"
+            "        exposure_time: 500000.0\n"
+            "        gain_value: 10.0\n"
+            "        start: \"06:00\"\n"
+            "      - name: \"night\"\n"
+            "        exposure_time: 500000.0\n"
+            "        gain_value: 10.0\n"
+            "        start: \"18:00\"\n"
+        ),
+        "",
+        1,
+    )
+    config_path = tmp_path / "runtime.yaml"
+    config_path.write_text(runtime_yaml, encoding="utf-8")
+
+    with pytest.raises(
+        ConfigError,
+        match=r"missing required field: cameras\[0\].profiles",
+    ):
+        load_config(str(config_path))
 
 
 def test_environment_config_override(monkeypatch, tmp_path):

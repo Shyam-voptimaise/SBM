@@ -1,4 +1,5 @@
 import queue
+import time
 
 from capture.camera import (
     BaslerCameraManager,
@@ -43,8 +44,6 @@ def camera_config(name="CAM1", device_index=0):
         name=name,
         device_index=device_index,
         serial_number=None,
-        exposure_time=500000.0,
-        gain_value=10.0,
         captures=(),
     )
 
@@ -177,7 +176,10 @@ def test_runtime_records_temperature_readings_to_file_and_info_log(tmp_path, cap
     ]
 
 
-def test_runtime_uploads_temperature_only_when_readings_change(tmp_path):
+def test_runtime_logs_and_uploads_temperature_only_when_readings_change(
+    tmp_path,
+    caplog,
+):
     runtime = CaptureRuntime(runtime_config(tmp_path))
     readings = [
         CameraTemperatureReading(
@@ -192,29 +194,52 @@ def test_runtime_uploads_temperature_only_when_readings_change(tmp_path):
         ),
     ]
 
-    runtime._record_temperature_readings(readings)
-    first_upload = runtime.temperature_upload_queue.get_nowait()
+    with caplog.at_level("INFO"):
+        runtime._record_temperature_readings(readings)
+        first_upload = runtime.temperature_upload_queue.get_nowait()
 
-    runtime._record_temperature_readings(readings)
+        runtime._record_temperature_readings(readings)
 
-    changed_readings = [
-        CameraTemperatureReading(
-            camera_name="CAM1",
-            temperature_c=37.4,
-            status="ok",
-        ),
-        CameraTemperatureReading(
-            camera_name="CAM2",
-            temperature_c=41.0,
-            status="ok",
-        ),
-    ]
-    runtime._record_temperature_readings(changed_readings)
-    second_upload = runtime.temperature_upload_queue.get_nowait()
+        changed_readings = [
+            CameraTemperatureReading(
+                camera_name="CAM1",
+                temperature_c=37.4,
+                status="ok",
+            ),
+            CameraTemperatureReading(
+                camera_name="CAM2",
+                temperature_c=41.0,
+                status="ok",
+            ),
+        ]
+        runtime._record_temperature_readings(changed_readings)
+        second_upload = runtime.temperature_upload_queue.get_nowait()
 
     assert runtime.temperature_upload_queue.empty()
     assert first_upload.payload["readings"][0]["temperature_c"] == 37.3
     assert second_upload.payload["readings"][0]["temperature_c"] == 37.4
+    assert caplog.text.count("Camera temperature:") == 2
+    assert (
+        len(
+            (tmp_path / "camera_temp.log")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        == 2
+    )
+
+
+def test_runtime_logs_when_scheduled_time_is_reached(tmp_path, caplog):
+    runtime = CaptureRuntime(runtime_config(tmp_path))
+
+    with caplog.at_level("INFO"):
+        assert runtime._wait_until_capture(
+            start_time=time.monotonic() - 1,
+            capture_at=0.5,
+            label="CAM1 CAP1",
+        )
+
+    assert "scheduled time reached: CAM1 CAP1 at +0.5s" in caplog.text
 
 
 def runtime_config(tmp_path):

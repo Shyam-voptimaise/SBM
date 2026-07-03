@@ -66,11 +66,19 @@ class CoilSequenceStore:
         if state and state.get("ist_date") == current_date:
             state_last = _coerce_non_negative_int(state.get("last_coil_number"))
             self._last_coil_number = max(state_last, scanned_last)
+            action = "restored"
         else:
             self._last_coil_number = scanned_last
+            action = "initialized"
 
         self._state_date = current_date
         self._write_state()
+        self.logger.info(
+            "coil sequence %s for %s; latest saved coil=%s",
+            action,
+            current_date,
+            format_coil_number(self._last_coil_number),
+        )
 
     def _current_date(self) -> str:
         return ist_date(self._now())

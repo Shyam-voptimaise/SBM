@@ -52,15 +52,22 @@ class CaptureRuntime:
         )
         self._threads = []
         self._trigger = None
-        self._last_temperature_upload_signature: Optional[
+        self._last_temperature_signature: Optional[
             Tuple[Tuple[str, Optional[float], str], ...]
         ] = None
 
     def request_stop(self) -> None:
+        if not self.stop_event.is_set():
+            self.logger.info("stop requested; shutting down runtime")
         self.stop_event.set()
 
     def run(self) -> None:
         self.config.paths.save_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.info(
+            "runtime starting; cameras=%d; save_dir=%s",
+            len(self.config.cameras),
+            self.config.paths.save_dir,
+        )
 
         try:
             self.camera_manager.open_configured_cameras()
@@ -72,9 +79,10 @@ class CaptureRuntime:
             self._run_gpio_loop(self._trigger)
         finally:
             self.request_stop()
+            self.logger.info("runtime cleanup started")
             self._close_trigger()
             self.camera_manager.close_all()
-            self.logger.info("shutdown")
+            self.logger.info("runtime stopped cleanly")
 
     def _start_worker_threads(self) -> None:
         upload_thread = threading.Thread(
@@ -190,25 +198,26 @@ class CaptureRuntime:
         self,
         readings: Sequence[CameraTemperatureReading],
     ) -> None:
+        signature = _temperature_signature(readings)
+        if signature == self._last_temperature_signature:
+            self.logger.debug("camera temperature unchanged; log and upload skipped")
+            return
+
         captured_at = now_ist()
         formatted_readings = [
             format_temperature_reading(reading) for reading in readings
         ]
 
         self._write_temperature_log(formatted_readings, captured_at)
-        self._queue_temperature_upload_if_changed(readings, captured_at)
+        self._queue_temperature_upload(readings, captured_at)
+        self._last_temperature_signature = signature
         self.logger.info("Camera temperature: %s", ", ".join(formatted_readings))
 
-    def _queue_temperature_upload_if_changed(
+    def _queue_temperature_upload(
         self,
         readings: Sequence[CameraTemperatureReading],
         captured_at: datetime,
     ) -> None:
-        signature = _temperature_upload_signature(readings)
-        if signature == self._last_temperature_upload_signature:
-            self.logger.debug("camera temperature unchanged; upload skipped")
-            return
-
         payload = {
             "captured_at": captured_at.isoformat(timespec="milliseconds"),
             "readings": [
@@ -216,7 +225,6 @@ class CaptureRuntime:
             ],
         }
         self.temperature_upload_queue.put(QueuedTemperatureUpload(payload))
-        self._last_temperature_upload_signature = signature
 
     def _write_temperature_log(
         self,
@@ -332,10 +340,10 @@ class CaptureRuntime:
             camera = scheduled_capture.camera
             capture = scheduled_capture.capture
             label = f"{camera.name} {capture.name}"
-            self.logger.debug(
-                "%s scheduled at +%ss",
+            self.logger.info(
+                "capture scheduled: %s at +%ss",
                 label,
-                scheduled_capture.capture_at_seconds,
+                _format_schedule_seconds(scheduled_capture.capture_at_seconds),
             )
 
             if not self._wait_until_capture(
@@ -365,6 +373,11 @@ class CaptureRuntime:
             remaining = capture_at - elapsed
 
             if remaining <= 0:
+                self.logger.info(
+                    "scheduled time reached: %s at +%ss",
+                    label,
+                    _format_schedule_seconds(capture_at),
+                )
                 return True
 
             self.logger.debug("%s in %ss", label, int(remaining + 0.999))
@@ -399,10 +412,16 @@ def _temperature_reading_to_payload(reading: CameraTemperatureReading) -> dict:
     return payload
 
 
-def _temperature_upload_signature(
+def _temperature_signature(
     readings: Sequence[CameraTemperatureReading],
 ) -> Tuple[Tuple[str, Optional[float], str], ...]:
     return tuple(
         (reading.camera_name, reading.temperature_c, reading.status)
         for reading in readings
     )
+
+
+def _format_schedule_seconds(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.3f}".rstrip("0").rstrip(".")

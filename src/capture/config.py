@@ -181,36 +181,13 @@ def _load_cameras(cameras: Sequence[Any]) -> Sequence[CameraConfig]:
         if serial_number is not None and not isinstance(serial_number, str):
             raise ConfigError(f"{label}.serial_number must be a string or null")
 
-        profiles = _load_profiles(camera.get("profiles"), label)
-        exposure_time = _optional_positive_number(camera, f"{label}.exposure_time")
-        gain_value = _optional_non_negative_number(camera, f"{label}.gain_value")
-
-        if profiles:
-            exposure_time = (
-                exposure_time
-                if exposure_time is not None
-                else profiles[0].exposure_time
-            )
-            gain_value = gain_value if gain_value is not None else profiles[0].gain_value
-        else:
-            exposure_time = _require_positive_number(camera, f"{label}.exposure_time")
-            gain_value = _require_non_negative_number(camera, f"{label}.gain_value")
-            profiles = (
-                CameraProfile(
-                    name="default",
-                    exposure_time=exposure_time,
-                    gain_value=gain_value,
-                    start_minutes=0,
-                ),
-            )
+        profiles = _load_profiles(_lookup(camera, f"{label}.profiles"), label)
 
         loaded.append(
             CameraConfig(
                 name=_require_non_empty_string(camera, f"{label}.name"),
                 device_index=_require_int(camera, f"{label}.device_index"),
                 serial_number=serial_number,
-                exposure_time=exposure_time,
-                gain_value=gain_value,
                 captures=tuple(captures),
                 profiles=tuple(profiles),
             )

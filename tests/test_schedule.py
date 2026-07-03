@@ -8,8 +8,6 @@ def test_capture_schedule_is_cumulative_and_sorted_across_cameras():
             name="CAM1",
             device_index=0,
             serial_number=None,
-            exposure_time=500000.0,
-            gain_value=10.0,
             captures=(
                 CaptureConfig(name="CAP1", delay_after_previous_seconds=10),
                 CaptureConfig(name="CAP2", delay_after_previous_seconds=6),
@@ -19,8 +17,6 @@ def test_capture_schedule_is_cumulative_and_sorted_across_cameras():
             name="CAM2",
             device_index=1,
             serial_number=None,
-            exposure_time=500000.0,
-            gain_value=10.0,
             captures=(
                 CaptureConfig(name="CAP1", delay_after_previous_seconds=10),
                 CaptureConfig(name="CAP2", delay_after_previous_seconds=6),

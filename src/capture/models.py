@@ -22,8 +22,6 @@ class CameraConfig:
     name: str
     device_index: int
     serial_number: Optional[str]
-    exposure_time: float
-    gain_value: float
     captures: Tuple[CaptureConfig, ...]
     profiles: Tuple[CameraProfile, ...] = field(default_factory=tuple)
 

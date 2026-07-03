@@ -65,11 +65,11 @@ Production defaults preserve the previous sender behavior:
   saved BMP files.
 - Missing cameras do not stop the process; reconnects are attempted while the
   runtime continues.
-- Camera temperatures use Basler `TemperatureAbs` readings and are logged every
+- Camera temperatures use Basler `TemperatureAbs` readings and are checked every
   `10` seconds by default.
-- The first camera temperature snapshot after startup is uploaded as JSON to the
-  receiver's `/temperature` endpoint. Later snapshots are uploaded only when a
-  camera temperature or status changes.
+- The first camera temperature snapshot after startup is logged and uploaded as
+  JSON to the receiver's `/temperature` endpoint. Later snapshots are logged and
+  uploaded only when a camera temperature or status changes.
 - Local BMP files are deleted only after a successful upload.
 - Failed uploads are requeued and retried after the configured delay.
 
@@ -85,12 +85,13 @@ Edit `config/runtime.yaml` for production:
 | `temperature_upload` | Receiver temperature URL, HTTP timeout, and retry delay. |
 | `camera_runtime` | Camera reconnect, temperature log, and profile retry intervals. |
 | `logging` | Console logging, rotating file logging, level, and noisy library suppression. |
-| `cameras` | Camera names, device indexes or serial numbers, profiles, exposure/gain fallback, and captures. |
+| `cameras` | Camera names, device indexes or serial numbers, profiles, and captures. |
 
 Paths support `~` expansion. Set `paths.camera_temperature_log_file` to `null`
 to disable camera temperature logging.
 
-Camera profiles are configured per camera:
+Camera profiles are required per camera and are the only source for exposure and
+gain values:
 
 ```yaml
 profiles:
@@ -129,7 +130,8 @@ Default temperature logging writes to:
 ~/coil_images/camera_temp.log
 ```
 
-Application logs are written in a parseable production format:
+Application logs are written in a parseable production format. Temperature
+readings appear only when a reading changes:
 
 ```text
 2026-01-02T03:04:05.123+05:30 | INFO | capture.runtime | pid=1234 | sbm-camera-temperature | runtime.py:131 | Camera temperature: CAM1=37.3 C
@@ -168,7 +170,7 @@ uploaded_at
 
 The sender posts camera temperatures to the configured temperature URL when the
 readings change. Temperature values are compared after rounding to one decimal
-place, so stable readings do not create repeated network uploads.
+place, so stable readings do not create repeated log entries or network uploads.
 
 - HTTP method: `POST`
 - content type: JSON
